@@ -71,7 +71,7 @@ UX modes:
 - Daemon (`-d`): background, Ctrl+C detaches.
 - Attach (`zeroshot attach`): connect to daemon, Ctrl+C detaches only.
 
-Settings: `defaultProvider`, `providerSettings` (claude/codex/gemini), legacy `maxModel`, `defaultConfig`, `logLevel`.
+Settings: `defaultProvider`, `providerSettings` (claude/codex/gemini), legacy `maxModel`, `defaultConfig`, `logLevel`, robustness (`maxRetries`, `backoffBaseMs`, `backoffMaxMs`, `jitterFactor`, `maxRestartAttempts`, `maxTotalRestarts`, `staleWarningsBeforeKill`).
 
 ## Architecture
 
@@ -89,6 +89,8 @@ Agent A -> publish() -> SQLite Ledger -> LogicEngine -> trigger match -> Agent B
 | Trigger      | Condition to wake agent (`{ topic, action, logic }`)        |
 | Logic Script | JS predicate for complex conditions                         |
 | Hook         | Post-task action (publish message, execute command)         |
+
+Restart persistence: orchestrator publishes `AGENT_RESTART_ATTEMPT` to the ledger so restart limits survive orchestrator restarts.
 
 ### Agent Configuration (Minimal)
 

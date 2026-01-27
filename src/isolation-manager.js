@@ -55,6 +55,7 @@ class IsolationManager {
     this.isolatedDirs = new Map(); // clusterId -> { path, originalDir }
     this.clusterConfigDirs = new Map(); // clusterId -> configDirPath
     this.worktrees = new Map(); // clusterId -> { path, branch, repoRoot }
+    this._exitWatchers = new Map(); // clusterId -> ChildProcess
   }
 
   /**
@@ -125,7 +126,44 @@ class IsolationManager {
 
     args.push('-w', '/workspace', image, 'tail', '-f', '/dev/null');
 
-    return this._spawnContainer(clusterId, args, workDir);
+    const containerId = await this._spawnContainer(clusterId, args, workDir);
+    this._watchContainerExit(clusterId, containerId, config.onExit);
+    return containerId;
+  }
+
+  _watchContainerExit(clusterId, containerId, onExit) {
+    if (typeof onExit !== 'function') {
+      return;
+    }
+
+    const existing = this._exitWatchers.get(clusterId);
+    if (existing) {
+      try {
+        existing.kill('SIGKILL');
+      } catch {
+        // Ignore
+      }
+      this._exitWatchers.delete(clusterId);
+    }
+
+    const proc = spawn('docker', ['wait', containerId], { stdio: ['ignore', 'pipe', 'ignore'] });
+    this._exitWatchers.set(clusterId, proc);
+
+    let stdout = '';
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    const finalize = () => {
+      if (this._exitWatchers.get(clusterId) === proc) {
+        this._exitWatchers.delete(clusterId);
+      }
+      const code = parseInt(stdout.trim(), 10);
+      onExit({ clusterId, containerId, exitCode: Number.isFinite(code) ? code : null });
+    };
+
+    proc.on('close', finalize);
+    proc.on('error', finalize);
   }
 
   _getRunningContainerId(clusterId) {
@@ -1256,7 +1294,7 @@ class IsolationManager {
 
   /**
    * Create worktree-based isolation for a cluster (lightweight alternative to Docker)
-   * Creates a git worktree at {os.tmpdir()}/zeroshot-worktrees/{clusterId}
+   * Creates a git worktree at ~/.zeroshot/worktrees/{clusterId}
    * @param {string} clusterId - Cluster ID
    * @param {string} workDir - Original working directory (must be a git repo)
    * @returns {{ path: string, branch: string, repoRoot: string }}
@@ -1311,8 +1349,8 @@ class IsolationManager {
     const baseBranchName = `zeroshot/${clusterId.replace(/^cluster-/, '')}`;
     let branchName = baseBranchName;
 
-    // Worktree path in tmp
-    const worktreePath = path.join(os.tmpdir(), 'zeroshot-worktrees', clusterId);
+    // Worktree path in persistent location (survives reboots)
+    const worktreePath = path.join(os.homedir(), '.zeroshot', 'worktrees', clusterId);
 
     // Ensure parent directory exists
     const parentDir = path.dirname(worktreePath);

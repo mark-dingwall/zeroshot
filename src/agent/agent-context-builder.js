@@ -176,7 +176,9 @@ function resolveSourceSince(source, cluster, lastTaskEndTime, lastAgentStartTime
     return lastTaskEndTime || cluster.createdAt;
   }
   if (sinceValue === 'last_agent_start') {
-    return lastAgentStartTime || cluster.createdAt;
+    // Use strict "after" semantics to avoid timestamp collisions in the same millisecond
+    // (prevents stale context from leaking across agent restarts).
+    return lastAgentStartTime ? lastAgentStartTime + 1 : cluster.createdAt;
   }
 
   if (typeof sinceValue === 'string') {
