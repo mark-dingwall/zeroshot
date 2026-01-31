@@ -7,6 +7,7 @@
       "role": "planning",
       "modelLevel": "level3",
       "maxIterations": 20,
+      "maxRetries": 3,
       "timeout": 0,
       "contextStrategy": {
         "sources": [
@@ -78,6 +79,7 @@
       "role": "implementation",
       "modelLevel": "level3",
       "maxIterations": 20,
+      "maxRetries": 3,
       "timeout": 0,
       "contextStrategy": {
         "sources": [
@@ -391,7 +393,7 @@
       "id": "validator-adversarial",
       "role": "validator",
       "modelLevel": "level3",
-      "maxIterations": 30,
+      "maxIterations": 25,
       "maxRetries": 3,
       "timeout": 0,
       "contextStrategy": {
@@ -739,6 +741,7 @@
       "role": "synthesizer",
       "modelLevel": "level2",
       "maxIterations": 10,
+      "maxRetries": 3,
       "timeout": 0,
       "contextStrategy": {
         "sources": [

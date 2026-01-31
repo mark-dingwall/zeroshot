@@ -8,6 +8,7 @@
       "role": "explorer",
       "modelLevel": "level3",
       "maxIterations": 15,
+      "maxRetries": 3,
       "timeout": 0,
       "contextStrategy": {
         "sources": [
@@ -38,7 +39,7 @@
           "topic": "VERIFICATION_RESULT",
           "logic": {
             "engine": "javascript",
-            "script": "const myLastFindings = ledger.findLast({ topic: 'FINDINGS_READY', sender: 'explorer-code' }); if (!myLastFindings) return false; const recentVerifications = ledger.query({ topic: 'VERIFICATION_RESULT', since: myLastFindings.timestamp }); const scores = recentVerifications.flatMap(m => m.content?.data?.scores || []); const challenged = scores.filter(s => s.explorerId === 'explorer-code' && (s.verdict === 'UNCERTAIN' || s.verdict === 'UNLIKELY')); return challenged.length > 0;"
+            "script": "const myLastFindings = ledger.findLast({ topic: 'FINDINGS_READY', sender: 'explorer-code' }); if (!myLastFindings) return false; const verifiers = cluster.getAgentsByRole('verifier'); const recentVerifications = ledger.query({ topic: 'VERIFICATION_RESULT', since: myLastFindings.timestamp }); const respondedVerifiers = new Set(recentVerifications.filter(m => verifiers.some(v => v.id === m.sender)).map(m => m.sender)); if (respondedVerifiers.size < verifiers.length) return false; const scores = recentVerifications.flatMap(m => m.content?.data?.scores || []); const challenged = scores.filter(s => s.explorerId === 'explorer-code' && (s.verdict === 'UNCERTAIN' || s.verdict === 'UNLIKELY')); return challenged.length > 0;"
           },
           "action": "execute_task"
         }
@@ -123,6 +124,7 @@
       "role": "explorer",
       "modelLevel": "level3",
       "maxIterations": 15,
+      "maxRetries": 3,
       "timeout": 0,
       "contextStrategy": {
         "sources": [
@@ -153,7 +155,7 @@
           "topic": "VERIFICATION_RESULT",
           "logic": {
             "engine": "javascript",
-            "script": "const myLastFindings = ledger.findLast({ topic: 'FINDINGS_READY', sender: 'explorer-docs' }); if (!myLastFindings) return false; const recentVerifications = ledger.query({ topic: 'VERIFICATION_RESULT', since: myLastFindings.timestamp }); const scores = recentVerifications.flatMap(m => m.content?.data?.scores || []); const challenged = scores.filter(s => s.explorerId === 'explorer-docs' && (s.verdict === 'UNCERTAIN' || s.verdict === 'UNLIKELY')); return challenged.length > 0;"
+            "script": "const myLastFindings = ledger.findLast({ topic: 'FINDINGS_READY', sender: 'explorer-docs' }); if (!myLastFindings) return false; const verifiers = cluster.getAgentsByRole('verifier'); const recentVerifications = ledger.query({ topic: 'VERIFICATION_RESULT', since: myLastFindings.timestamp }); const respondedVerifiers = new Set(recentVerifications.filter(m => verifiers.some(v => v.id === m.sender)).map(m => m.sender)); if (respondedVerifiers.size < verifiers.length) return false; const scores = recentVerifications.flatMap(m => m.content?.data?.scores || []); const challenged = scores.filter(s => s.explorerId === 'explorer-docs' && (s.verdict === 'UNCERTAIN' || s.verdict === 'UNLIKELY')); return challenged.length > 0;"
           },
           "action": "execute_task"
         }
@@ -436,6 +438,7 @@
       "role": "synthesizer",
       "modelLevel": "level3",
       "maxIterations": 25,
+      "maxRetries": 3,
       "timeout": 0,
       "contextStrategy": {
         "sources": [
