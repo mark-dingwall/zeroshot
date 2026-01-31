@@ -1,0 +1,33 @@
+#!/bin/bash
+# zs - zeroshot wrapper with salvage-on-failure
+#
+# INSTALLATION:
+#   cp scripts/salvage/zs ~/.local/bin/zs
+#   cp scripts/salvage/salvage.sh ~/.zeroshot/scripts/salvage.sh
+#   chmod +x ~/.local/bin/zs ~/.zeroshot/scripts/salvage.sh
+#   export PATH="$HOME/.local/bin:$PATH"  # Add to .bashrc/.zshrc
+#
+# USAGE:
+#   zs run 123              # Same as zeroshot, but with salvage on failure
+#   zs run 123 --worktree   # Works with all flags
+
+FULL_COMMAND="zeroshot $*"
+TEMP_OUTPUT=$(mktemp)
+
+# Run zeroshot, capture output while displaying it
+zeroshot "$@" 2>&1 | tee "$TEMP_OUTPUT"
+EXIT_CODE=${PIPESTATUS[0]}
+
+if [ $EXIT_CODE -ne 0 ]; then
+    # Parse cluster ID: "Starting quick-wolf-40" -> "quick-wolf-40"
+    CLUSTER_ID=$(grep '^Starting ' "$TEMP_OUTPUT" | head -1 | awk '{print $2}')
+
+    if [ -n "$CLUSTER_ID" ]; then
+        echo ""
+        echo "Warning: Cluster $CLUSTER_ID exited abnormally. Running salvage..."
+        ~/.zeroshot/scripts/salvage.sh "$CLUSTER_ID" "$FULL_COMMAND"
+    fi
+fi
+
+rm -f "$TEMP_OUTPUT"
+exit $EXIT_CODE
