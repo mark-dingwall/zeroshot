@@ -1,0 +1,544 @@
+{
+  "name": "High Power Research",
+  "description": "Thorough read-only analysis with 2 explorers, 2 verifiers, and a synthesizer. Fine-tooth comb investigation for bugs, gaps, and issues.",
+  "forceComplexity": "CRITICAL",
+  "agents": [
+    {
+      "id": "explorer-code",
+      "role": "explorer",
+      "modelLevel": "level3",
+      "maxIterations": 15,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "FINDINGS_READY",
+            "priority": "low",
+            "since": "cluster_start",
+            "sender": "explorer-code",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "VERIFICATION_RESULT",
+            "priority": "low",
+            "since": "cluster_start",
+            "strategy": "all",
+            "amount": 5
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [
+        { "topic": "ISSUE_OPENED", "action": "execute_task" },
+        {
+          "topic": "VERIFICATION_RESULT",
+          "logic": {
+            "engine": "javascript",
+            "script": "const myLastFindings = ledger.findLast({ topic: 'FINDINGS_READY', sender: 'explorer-code' }); if (!myLastFindings) return false; const recentVerifications = ledger.query({ topic: 'VERIFICATION_RESULT', since: myLastFindings.timestamp }); const scores = recentVerifications.flatMap(m => m.content?.data?.scores || []); const challenged = scores.filter(s => s.explorerId === 'explorer-code' && (s.verdict === 'UNCERTAIN' || s.verdict === 'UNLIKELY')); return challenged.length > 0;"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "prompt": {
+        "system": "You are a CODE & LOGIC EXPLORER performing deep analysis.\n\n## 🔴 READ-ONLY MODE\nYou are in RESEARCH/ANALYSIS mode. You may NOT:\n- Create, modify, or delete any code files\n- Create, modify, or delete any documentation files  \n- Run commands that modify state (git commit, npm install, etc.)\n- Write to any file except publishing findings via the message system\n\nYou MAY:\n- Read any file (code, docs, configs, tests)\n- Run read-only commands (grep, find, cat, node -e for analysis)\n- Execute code in read-only ways to understand behavior\n\n## YOUR MISSION\nInvestigate the codebase from a CODE & LOGIC perspective. Find:\n\n### Logic Issues\n- Off-by-one errors, boundary condition bugs\n- Incorrect boolean logic, operator precedence issues\n- Missing null/undefined checks\n- Unreachable code, dead branches\n- Incorrect loop termination conditions\n\n### Error Handling\n- Swallowed exceptions, silent failures\n- Missing error propagation\n- Inconsistent error handling patterns\n- Resource leaks (unclosed handles, connections)\n\n### Edge Cases\n- Empty inputs, null values, undefined behavior\n- Concurrent access issues, race conditions\n- Integer overflow, floating point precision\n- Unicode handling, special characters\n\n### Code Quality\n- Complex functions that are hard to reason about\n- Duplicated logic that could diverge\n- Implicit assumptions not documented\n- Magic numbers/strings without explanation\n\n## INVESTIGATION APPROACH\n1. Read the task/prompt to understand what to focus on\n2. Explore relevant code systematically\n3. For each potential issue:\n   - Gather concrete evidence (file, line, code snippet)\n   - Explain WHY it's a problem\n   - Assess severity (critical/high/medium/low/info)\n4. Be thorough but precise - quality over quantity\n\n## WHEN YOUR FINDINGS ARE CHALLENGED\nIf a verifier marks your finding as UNCERTAIN or UNLIKELY:\n- Treat it as an invitation to dig deeper\n- Look for additional evidence\n- If you find more support, strengthen your case\n- If you can't, concede gracefully\n\n## ON RE-EXECUTION (after verification)\nIf you see VERIFICATION_RESULT messages in your context, you are being re-triggered because verifiers marked some of YOUR findings as UNCERTAIN or UNLIKELY. Focus on:\n1. Read the verifier feedback carefully\n2. For UNCERTAIN findings: provide stronger evidence, more concrete examples, or clearer reproduction steps\n3. For UNLIKELY findings: either provide compelling counter-evidence or acknowledge the finding should be withdrawn\n4. Only include findings that address the challenged items - don't repeat confirmed findings\n5. If you cannot strengthen your case, it's better to publish an empty findings array than to repeat weak claims\n\n## OUTPUT\nPublish your findings in the structured JSON format specified."
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "FINDINGS_READY",
+            "content": {
+              "text": "Code & Logic Explorer findings ready",
+              "data": {
+                "explorerId": "explorer-code",
+                "category": "code-logic",
+                "findings": "{{result.findings}}",
+                "summary": "{{result.summary}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: explorer-code",
+              "data": {
+                "agentId": "explorer-code",
+                "role": "explorer",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "category": {
+                  "type": "string",
+                  "enum": ["logic", "error-handling", "edge-case", "code-quality"]
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": ["critical", "high", "medium", "low", "info"]
+                },
+                "title": { "type": "string" },
+                "description": { "type": "string" },
+                "file": { "type": "string" },
+                "lines": { "type": "string" },
+                "snippet": { "type": "string" },
+                "reasoning": { "type": "string" }
+              },
+              "required": [
+                "id",
+                "category",
+                "severity",
+                "title",
+                "description",
+                "file",
+                "reasoning"
+              ]
+            }
+          },
+          "summary": { "type": "string" },
+          "filesExamined": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["findings", "summary"]
+      }
+    },
+    {
+      "id": "explorer-docs",
+      "role": "explorer",
+      "modelLevel": "level3",
+      "maxIterations": 15,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "FINDINGS_READY",
+            "priority": "low",
+            "since": "cluster_start",
+            "sender": "explorer-docs",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "VERIFICATION_RESULT",
+            "priority": "low",
+            "since": "cluster_start",
+            "strategy": "all",
+            "amount": 5
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [
+        { "topic": "ISSUE_OPENED", "action": "execute_task" },
+        {
+          "topic": "VERIFICATION_RESULT",
+          "logic": {
+            "engine": "javascript",
+            "script": "const myLastFindings = ledger.findLast({ topic: 'FINDINGS_READY', sender: 'explorer-docs' }); if (!myLastFindings) return false; const recentVerifications = ledger.query({ topic: 'VERIFICATION_RESULT', since: myLastFindings.timestamp }); const scores = recentVerifications.flatMap(m => m.content?.data?.scores || []); const challenged = scores.filter(s => s.explorerId === 'explorer-docs' && (s.verdict === 'UNCERTAIN' || s.verdict === 'UNLIKELY')); return challenged.length > 0;"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "prompt": {
+        "system": "You are a DOCS & ARCHITECTURE EXPLORER performing deep analysis.\n\n## 🔴 READ-ONLY MODE\nYou are in RESEARCH/ANALYSIS mode. You may NOT:\n- Create, modify, or delete any code files\n- Create, modify, or delete any documentation files  \n- Run commands that modify state (git commit, npm install, etc.)\n- Write to any file except publishing findings via the message system\n\nYou MAY:\n- Read any file (code, docs, configs, tests)\n- Run read-only commands (grep, find, cat, node -e for analysis)\n- Execute code in read-only ways to understand behavior\n\n## YOUR MISSION\nInvestigate the codebase from a DOCUMENTATION & ARCHITECTURE perspective. Find:\n\n### Documentation Gaps\n- Features documented but not implemented\n- Features implemented but not documented\n- Outdated documentation that no longer matches code\n- Incorrect examples or instructions\n- Missing API documentation\n- Ambiguous requirements or specifications\n\n### Architecture Issues\n- Circular dependencies\n- Tight coupling between modules\n- Missing abstractions or leaky abstractions\n- Inconsistent patterns across codebase\n- Single points of failure\n- Scalability concerns\n\n### Spec vs Implementation\n- Behavior that differs from documented spec\n- Missing validation described in docs\n- Error codes/messages that don't match docs\n- Configuration options not working as documented\n\n### Consistency Issues  \n- Naming inconsistencies (files, functions, variables)\n- Style inconsistencies across modules\n- Different approaches to same problem\n- Conflicting documentation between files\n\n## INVESTIGATION APPROACH\n1. Read the task/prompt to understand what to focus on\n2. Read documentation thoroughly first\n3. Cross-reference against actual implementation\n4. For each gap/issue:\n   - Cite specific doc location and code location\n   - Explain the discrepancy clearly\n   - Assess severity (critical/high/medium/low/info)\n5. Be thorough but precise - quality over quantity\n\n## WHEN YOUR FINDINGS ARE CHALLENGED\nIf a verifier marks your finding as UNCERTAIN or UNLIKELY:\n- Treat it as an invitation to dig deeper\n- Look for additional evidence\n- If you find more support, strengthen your case  \n- If you can't, concede gracefully\n\n## ON RE-EXECUTION (after verification)\nIf you see VERIFICATION_RESULT messages in your context, you are being re-triggered because verifiers marked some of YOUR findings as UNCERTAIN or UNLIKELY. Focus on:\n1. Read the verifier feedback carefully\n2. For UNCERTAIN findings: provide clearer evidence of the documentation gap or spec mismatch\n3. For UNLIKELY findings: either demonstrate user impact more clearly or acknowledge the finding should be withdrawn\n4. Only include findings that address the challenged items - don't repeat confirmed findings\n5. If you cannot strengthen your case, it's better to publish an empty findings array than to repeat weak claims\n\n## OUTPUT\nPublish your findings in the structured JSON format specified."
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "FINDINGS_READY",
+            "content": {
+              "text": "Docs & Architecture Explorer findings ready",
+              "data": {
+                "explorerId": "explorer-docs",
+                "category": "docs-architecture",
+                "findings": "{{result.findings}}",
+                "summary": "{{result.summary}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: explorer-docs",
+              "data": {
+                "agentId": "explorer-docs",
+                "role": "explorer",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "category": {
+                  "type": "string",
+                  "enum": ["doc-gap", "architecture", "spec-mismatch", "consistency"]
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": ["critical", "high", "medium", "low", "info"]
+                },
+                "title": { "type": "string" },
+                "description": { "type": "string" },
+                "docLocation": { "type": "string" },
+                "codeLocation": { "type": "string" },
+                "reasoning": { "type": "string" }
+              },
+              "required": ["id", "category", "severity", "title", "description", "reasoning"]
+            }
+          },
+          "summary": { "type": "string" },
+          "docsExamined": { "type": "array", "items": { "type": "string" } },
+          "filesExamined": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["findings", "summary"]
+      }
+    },
+    {
+      "id": "verifier-alpha",
+      "role": "verifier",
+      "modelLevel": "level3",
+      "maxIterations": 10,
+      "maxRetries": 3,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "FINDINGS_READY",
+            "priority": "high",
+            "since": "cluster_start",
+            "strategy": "all",
+            "amount": 10
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [
+        {
+          "topic": "FINDINGS_READY",
+          "logic": {
+            "engine": "javascript",
+            "script": "const explorers = cluster.getAgentsByRole('explorer');\nconst results = ledger.query({ topic: 'FINDINGS_READY' });\nconst explorerIds = new Set(explorers.map(e => e.id));\nconst received = new Set();\nfor (const msg of results) {\n  if (explorerIds.has(msg.sender)) received.add(msg.sender);\n}\nreturn received.size >= explorers.length;"
+          },
+          "action": "execute_task"
+        },
+        {
+          "topic": "FINDINGS_READY",
+          "logic": {
+            "engine": "javascript",
+            "script": "const lastVerification = ledger.findLast({ topic: 'VERIFICATION_RESULT', sender: 'verifier-alpha' });\nif (!lastVerification) return false;\nconst newFindings = ledger.query({ topic: 'FINDINGS_READY', since: lastVerification.timestamp });\nreturn newFindings.length > 0;"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "prompt": {
+        "system": "You are VERIFIER ALPHA - an independent fact-checker for explorer findings.\n\n## 🔴 READ-ONLY MODE\nYou are in RESEARCH/ANALYSIS mode. You may NOT:\n- Create, modify, or delete any code files\n- Create, modify, or delete any documentation files  \n- Run commands that modify state (git commit, npm install, etc.)\n\nYou MAY:\n- Read any file to verify claims\n- Run read-only commands to check evidence\n- Execute code snippets to reproduce issues\n\n## YOUR MISSION\nReview ALL findings from ALL explorers. For each finding:\n\n1. **Locate the evidence** - Go to the file/line cited\n2. **Verify the claim** - Does the code actually have this issue?\n3. **Check the reasoning** - Is the logic sound?\n4. **Assign a verdict**:\n   - CONFIRMED: Verified, the issue exists as described\n   - LIKELY: Evidence supports it, but couldn't fully verify\n   - UNCERTAIN: Need more investigation, reasoning has gaps\n   - UNLIKELY: Evidence is weak, probably not an issue\n   - FALSE_POSITIVE: Demonstrably incorrect, code is fine\n\n## SCORING GUIDELINES\n- CONFIRMED requires you to see the issue yourself in the code\n- LIKELY means you see supporting evidence but can't reproduce\n- UNCERTAIN means the claim is plausible but evidence is thin\n- UNLIKELY means you found counter-evidence\n- FALSE_POSITIVE means you can prove the finding is wrong\n\n## EVIDENCE REQUIREMENTS\n- Cite specific code when confirming or refuting\n- If you run commands to verify, show the output\n- Explain your reasoning for each verdict\n- Be fair but rigorous - don't rubber-stamp\n\n## CONVERGENT FINDINGS\nIf multiple explorers independently flagged similar issues, note this. Convergent findings from independent sources are stronger evidence.\n\nIf you want to mark something FALSE_POSITIVE but another explorer found a similar issue, consider both perspectives before deciding.\n\n## OUTPUT\nScore each finding and publish your verification results."
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VERIFICATION_RESULT",
+            "content": {
+              "text": "Verifier Alpha results ready",
+              "data": {
+                "verifierId": "verifier-alpha",
+                "scores": "{{result.scores}}",
+                "summary": "{{result.summary}}",
+                "consensusReached": "{{result.consensusReached}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: verifier-alpha",
+              "data": {
+                "agentId": "verifier-alpha",
+                "role": "verifier",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "scores": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "findingId": { "type": "string" },
+                "explorerId": { "type": "string" },
+                "verdict": {
+                  "type": "string",
+                  "enum": ["CONFIRMED", "LIKELY", "UNCERTAIN", "UNLIKELY", "FALSE_POSITIVE"]
+                },
+                "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+                "evidence": { "type": "string" },
+                "notes": { "type": "string" },
+                "convergentWith": { "type": "array", "items": { "type": "string" } }
+              },
+              "required": ["findingId", "explorerId", "verdict", "evidence"]
+            }
+          },
+          "summary": { "type": "string" },
+          "consensusReached": { "type": "boolean" },
+          "uncertainCount": { "type": "number" }
+        },
+        "required": ["scores", "summary", "consensusReached"]
+      }
+    },
+    {
+      "id": "verifier-beta",
+      "role": "verifier",
+      "modelLevel": "level3",
+      "maxIterations": 10,
+      "maxRetries": 3,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "FINDINGS_READY",
+            "priority": "high",
+            "since": "cluster_start",
+            "strategy": "all",
+            "amount": 10
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [
+        {
+          "topic": "FINDINGS_READY",
+          "logic": {
+            "engine": "javascript",
+            "script": "const explorers = cluster.getAgentsByRole('explorer');\nconst results = ledger.query({ topic: 'FINDINGS_READY' });\nconst explorerIds = new Set(explorers.map(e => e.id));\nconst received = new Set();\nfor (const msg of results) {\n  if (explorerIds.has(msg.sender)) received.add(msg.sender);\n}\nreturn received.size >= explorers.length;"
+          },
+          "action": "execute_task"
+        },
+        {
+          "topic": "FINDINGS_READY",
+          "logic": {
+            "engine": "javascript",
+            "script": "const lastVerification = ledger.findLast({ topic: 'VERIFICATION_RESULT', sender: 'verifier-beta' });\nif (!lastVerification) return false;\nconst newFindings = ledger.query({ topic: 'FINDINGS_READY', since: lastVerification.timestamp });\nreturn newFindings.length > 0;"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "prompt": {
+        "system": "You are VERIFIER BETA - an independent fact-checker for explorer findings.\n\n## 🔴 READ-ONLY MODE\nYou are in RESEARCH/ANALYSIS mode. You may NOT:\n- Create, modify, or delete any code files\n- Create, modify, or delete any documentation files  \n- Run commands that modify state (git commit, npm install, etc.)\n\nYou MAY:\n- Read any file to verify claims\n- Run read-only commands to check evidence\n- Execute code snippets to reproduce issues\n\n## YOUR MISSION\nReview ALL findings from ALL explorers. For each finding:\n\n1. **Locate the evidence** - Go to the file/line cited\n2. **Verify the claim** - Does the code actually have this issue?\n3. **Check the reasoning** - Is the logic sound?\n4. **Assign a verdict**:\n   - CONFIRMED: Verified, the issue exists as described\n   - LIKELY: Evidence supports it, but couldn't fully verify\n   - UNCERTAIN: Need more investigation, reasoning has gaps\n   - UNLIKELY: Evidence is weak, probably not an issue\n   - FALSE_POSITIVE: Demonstrably incorrect, code is fine\n\n## SCORING GUIDELINES\n- CONFIRMED requires you to see the issue yourself in the code\n- LIKELY means you see supporting evidence but can't reproduce\n- UNCERTAIN means the claim is plausible but evidence is thin\n- UNLIKELY means you found counter-evidence\n- FALSE_POSITIVE means you can prove the finding is wrong\n\n## EVIDENCE REQUIREMENTS\n- Cite specific code when confirming or refuting\n- If you run commands to verify, show the output\n- Explain your reasoning for each verdict\n- Be fair but rigorous - don't rubber-stamp\n\n## INDEPENDENCE\nYou are INDEPENDENT from Verifier Alpha. Form your own opinions. Disagreement between verifiers is valuable - it highlights findings that need more scrutiny.\n\n## CONVERGENT FINDINGS\nIf multiple explorers independently flagged similar issues, note this. Convergent findings from independent sources are stronger evidence.\n\nIf you want to mark something FALSE_POSITIVE but another explorer found a similar issue, consider both perspectives before deciding.\n\n## OUTPUT\nScore each finding and publish your verification results."
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VERIFICATION_RESULT",
+            "content": {
+              "text": "Verifier Beta results ready",
+              "data": {
+                "verifierId": "verifier-beta",
+                "scores": "{{result.scores}}",
+                "summary": "{{result.summary}}",
+                "consensusReached": "{{result.consensusReached}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: verifier-beta",
+              "data": {
+                "agentId": "verifier-beta",
+                "role": "verifier",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "scores": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "findingId": { "type": "string" },
+                "explorerId": { "type": "string" },
+                "verdict": {
+                  "type": "string",
+                  "enum": ["CONFIRMED", "LIKELY", "UNCERTAIN", "UNLIKELY", "FALSE_POSITIVE"]
+                },
+                "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+                "evidence": { "type": "string" },
+                "notes": { "type": "string" },
+                "convergentWith": { "type": "array", "items": { "type": "string" } }
+              },
+              "required": ["findingId", "explorerId", "verdict", "evidence"]
+            }
+          },
+          "summary": { "type": "string" },
+          "consensusReached": { "type": "boolean" },
+          "uncertainCount": { "type": "number" }
+        },
+        "required": ["scores", "summary", "consensusReached"]
+      }
+    },
+    {
+      "id": "synthesizer",
+      "role": "synthesizer",
+      "modelLevel": "level3",
+      "maxIterations": 25,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "FINDINGS_READY",
+            "priority": "high",
+            "since": "cluster_start",
+            "strategy": "all",
+            "amount": 10
+          },
+          {
+            "topic": "VERIFICATION_RESULT",
+            "priority": "high",
+            "since": "cluster_start",
+            "strategy": "all",
+            "amount": 10
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [
+        {
+          "topic": "VERIFICATION_RESULT",
+          "logic": {
+            "engine": "javascript",
+            "script": "const verifiers = cluster.getAgentsByRole('verifier');\nconst results = ledger.query({ topic: 'VERIFICATION_RESULT' });\nconst verifierIds = new Set(verifiers.map(v => v.id));\nconst received = new Set();\nfor (const msg of results) {\n  if (verifierIds.has(msg.sender)) received.add(msg.sender);\n}\nif (received.size < verifiers.length) return false;\nconst latestByVerifier = new Map();\nfor (const msg of results) {\n  if (!verifierIds.has(msg.sender)) continue;\n  const existing = latestByVerifier.get(msg.sender);\n  if (!existing || msg.timestamp > existing.timestamp) {\n    latestByVerifier.set(msg.sender, msg);\n  }\n}\nfor (const [id, msg] of latestByVerifier) {\n  if (msg?.content?.data?.consensusReached === false) return false;\n}\nreturn true;"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "prompt": {
+        "system": "You are the SYNTHESIZER - you produce the final research report.\n\n## 🔴 READ-ONLY MODE (with one exception)\nYou may NOT modify any existing files.\n\nYou MUST write the final report to the file specified in the original task/prompt.\nIf no file is specified, write to `RESEARCH_FINDINGS.md` in the project root.\n\n## YOUR MISSION\nSynthesize all explorer findings and verifier scores into a comprehensive report.\n\n## REPORT STRUCTURE\n\n### Executive Summary\n- Total findings analyzed\n- Confirmed issues by severity\n- Key patterns observed\n- Top 3-5 recommended actions\n\n### Findings Table\n| ID | Title | Severity | Category | Explorer | Verdict | Convergence |\n|----|-------|----------|----------|----------|---------|-------------|\n\nWhere:\n- Verdict = final verdict (CONFIRMED/LIKELY if both verifiers agree, note disagreement if they don't)\n- Convergence = number of explorers who found similar issues\n\n### Confirmed Findings (Detail)\nFor each CONFIRMED or LIKELY finding:\n- Full description\n- Evidence cited\n- Verifier notes\n- File/location\n\n### Disputed Findings\nFindings where verifiers disagreed or marked UNCERTAIN.\nInclude both perspectives.\n\n### Statistics\n- Findings by severity: Critical/High/Medium/Low/Info\n- Findings by category\n- Confirmation rate: % of findings confirmed\n- Verifier agreement rate\n- Convergence stats: How many findings were found by multiple explorers\n\n### Methodology\nBrief note on what was examined and approach taken.\n\n## OUTPUT\nWrite the report file, then publish REPORT_READY."
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "REPORT_READY",
+            "content": {
+              "text": "Final research report written",
+              "data": {
+                "reportPath": "{{result.reportPath}}",
+                "summary": "{{result.summary}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: synthesizer",
+              "data": {
+                "agentId": "synthesizer",
+                "role": "synthesizer",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "reportPath": { "type": "string" },
+          "summary": { "type": "string" },
+          "stats": {
+            "type": "object",
+            "properties": {
+              "totalFindings": { "type": "number" },
+              "confirmed": { "type": "number" },
+              "likely": { "type": "number" },
+              "uncertain": { "type": "number" },
+              "unlikely": { "type": "number" },
+              "falsePositive": { "type": "number" },
+              "bySeverity": { "type": "object" },
+              "byCategory": { "type": "object" },
+              "convergentFindings": { "type": "number" }
+            }
+          }
+        },
+        "required": ["reportPath", "summary"]
+      }
+    },
+    {
+      "id": "completion-detector",
+      "role": "orchestrator",
+      "modelLevel": "level1",
+      "maxIterations": 1,
+      "timeout": 0,
+      "triggers": [
+        {
+          "topic": "REPORT_READY",
+          "action": "stop_cluster"
+        }
+      ],
+      "prompt": {
+        "system": "Completion detector - stops cluster when final report is ready."
+      }
+    }
+  ]
+}

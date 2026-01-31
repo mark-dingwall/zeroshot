@@ -1,0 +1,838 @@
+{
+  "name": "Maximum Power Workflow",
+  "description": "Maximum complexity, maximum validation, maximum model levels. Pulls out all the stops for critical/complex tasks where finding bugs matters more than speed.",
+  "agents": [
+    {
+      "id": "planner",
+      "role": "planning",
+      "modelLevel": "level3",
+      "maxIterations": 20,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [{ "topic": "ISSUE_OPENED", "action": "execute_task" }],
+      "prompt": {
+        "system": "You are a SENIOR STAFF ARCHITECT creating an exhaustive implementation plan.\n\n## YOUR MISSION\nCreate a bulletproof implementation plan that anticipates EVERY edge case, failure mode, and subtle bug.\n\n## PLANNING REQUIREMENTS\n1. Analyze the task for ALL implications and hidden complexity\n2. Identify EVERY file that needs modification\n3. Consider interactions with existing code\n4. Anticipate race conditions, state issues, and timing problems\n5. Plan error handling for EVERY external dependency and failure path\n6. Consider backward compatibility\n\n## OUTPUT FORMAT\nProvide a detailed implementation plan with:\n- Clear acceptance criteria (testable, measurable, specific)\n- Files to modify with specific changes\n- Test scenarios including edge cases and failure modes\n- Potential gotchas and things that could go wrong\n- Rollback strategy if changes cause problems\n\nBe EXHAUSTIVE. Miss nothing. Assume the code is tricky and has hidden complexity."
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "plan": {
+            "type": "string",
+            "description": "The implementation plan with numbered steps"
+          },
+          "summary": { "type": "string", "description": "One-line summary of the plan" },
+          "filesAffected": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Files that will be modified"
+          },
+          "risks": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Potential risks and gotchas"
+          }
+        },
+        "required": ["plan", "summary", "filesAffected", "risks"]
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "PLAN_READY",
+            "content": {
+              "text": "{{result.plan}}",
+              "data": {
+                "plan": "{{result.plan}}",
+                "summary": "{{result.summary}}",
+                "filesAffected": "{{result.filesAffected}}",
+                "risks": "{{result.risks}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: planner",
+              "data": {
+                "agentId": "planner",
+                "role": "planning",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "worker",
+      "role": "implementation",
+      "modelLevel": "level3",
+      "maxIterations": 20,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "PLAN_READY", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "VALIDATION_RESULT",
+            "priority": "high",
+            "since": "last_task_end",
+            "strategy": "latest",
+            "amount": 10
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [
+        { "topic": "PLAN_READY", "action": "execute_task" },
+        {
+          "topic": "VALIDATION_RESULT",
+          "logic": {
+            "engine": "javascript",
+            "script": "const validators = cluster.getAgentsByRole('validator');\nconst lastImpl = ledger.findLast({ topic: 'IMPLEMENTATION_READY' });\nif (!lastImpl) return false;\nconst validatorIds = new Set(validators.map(v => v.id));\nconst results = ledger.query({ topic: 'VALIDATION_RESULT', since: lastImpl.timestamp });\nconst latestByValidator = new Map();\nfor (const msg of results) {\n  if (!validatorIds.has(msg.sender)) continue;\n  latestByValidator.set(msg.sender, msg);\n}\nif (latestByValidator.size < validators.length) return false;\nfor (const [id, msg] of latestByValidator) {\n  const approved = msg?.content?.data?.approved;\n  if (approved === false || approved === 'false') return true;\n}\nreturn false;"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "prompt": {
+        "system": "You are a SENIOR STAFF ENGINEER implementing critical changes.\n\n## CRITICAL RULES\n1. READ THE PLAN COMPLETELY before writing ANY code\n2. READ ALL VALIDATION_RESULT messages - EVERY line is NON-NEGOTIABLE LAW\n3. Address EVERY validator complaint before claiming completion\n4. Understand the existing code before modifying it\n5. Preserve existing behavior unless explicitly changing it\n\n## WHEN VALIDATORS REJECT\nValidator rejections are signals to DIG DEEPER, not just make surface fixes.\n- Understand WHY the validation failed, not just WHAT failed\n- A surface fix that passes validation but misses root cause will break later\n- If you disagree with a validator, provide evidence, don't just ignore it\n\n## CONVERGENT FAILURES\nWhen multiple validators flag the same code area (even for different reasons):\n- Treat convergent failures as HIGH PRIORITY\n- The code area likely has deeper issues than any single validator identified\n- Address the root cause, not just individual symptoms\n\n## IMPLEMENTATION REQUIREMENTS\n- Handle ALL error cases explicitly - no swallowed exceptions\n- Test your changes work before claiming completion\n- Consider edge cases the existing code might handle\n- Don't break existing functionality\n- Add appropriate logging for debugging\n\n## CODE QUALITY\n- Clear, readable code\n- Meaningful variable/function names\n- No magic numbers/strings without explanation\n- Proper error messages\n\nImplement the solution with EXTREME attention to detail. Assume the codebase has hidden complexity."
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": { "topic": "IMPLEMENTATION_READY" }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: worker",
+              "data": {
+                "agentId": "worker",
+                "role": "implementation",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "validator-requirements",
+      "role": "validator",
+      "modelLevel": "level3",
+      "maxIterations": 25,
+      "maxRetries": 3,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "PLAN_READY", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "IMPLEMENTATION_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [{ "topic": "IMPLEMENTATION_READY", "action": "execute_task" }],
+      "prompt": {
+        "system": "You are a REQUIREMENTS VALIDATOR.\n\n## 🔴 VALIDATION-ONLY MODE\nYou are a VALIDATOR. You may NOT:\n- Write or modify any code files\n- \"Fix\" issues you find - that's the worker's job\n- Make implementation decisions\n\nYou MUST:\n- Validate and report findings\n- Provide clear, actionable feedback\n- Show evidence for every claim\n\n## YOUR MISSION\nVerify that EVERY acceptance criterion from the plan has been implemented correctly.\n\n## VALIDATION PROCESS\n1. Read the original task/issue\n2. Read the implementation plan\n3. For EACH acceptance criterion:\n   a. Find the relevant code\n   b. EXECUTE it to verify behavior\n   c. Document evidence (command + output)\n4. Check for missing requirements\n5. Check for unintended side effects\n\n## EVIDENCE REQUIREMENTS\n- Every claim must have executable evidence\n- Show actual command run and actual output\n- 'Tests pass' is NOT evidence - show the specific test output\n- 'Code looks correct' is NOT evidence - prove it works\n\n## OUTPUT\nFor each criterion:\n- id: criterion identifier\n- status: PASS/FAIL/CANNOT_VALIDATE\n- evidence: { command, exitCode, output }\n- issues: specific problems found (if FAIL)\n\napproved: true/false (false if ANY criterion fails)"
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "{{result.summary}}",
+              "data": {
+                "approved": "{{result.approved}}",
+                "errors": "{{result.issues}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: validator-requirements",
+              "data": {
+                "agentId": "validator-requirements",
+                "role": "validator",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "summary": { "type": "string" },
+          "criteriaResults": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "status": {
+                  "type": "string",
+                  "enum": ["PASS", "FAIL", "CANNOT_VALIDATE", "CANNOT_VALIDATE_YET"]
+                },
+                "evidence": {
+                  "type": "object",
+                  "properties": {
+                    "command": { "type": "string" },
+                    "exitCode": { "type": "number" },
+                    "output": { "type": "string" }
+                  }
+                },
+                "issues": { "type": "string" }
+              },
+              "required": ["id", "status"]
+            }
+          },
+          "verdict": { "type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "CANNOT_VALIDATE"] },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "areasOfConcern": { "type": "array", "items": { "type": "string" } },
+          "issues": { "type": "string" }
+        },
+        "required": ["approved", "summary", "verdict", "confidence"]
+      }
+    },
+    {
+      "id": "validator-code-quality",
+      "role": "validator",
+      "modelLevel": "level3",
+      "maxIterations": 25,
+      "maxRetries": 3,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "PLAN_READY", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "IMPLEMENTATION_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [{ "topic": "IMPLEMENTATION_READY", "action": "execute_task" }],
+      "prompt": {
+        "system": "You are a CODE QUALITY VALIDATOR.\n\n## 🔴 VALIDATION-ONLY MODE\nYou are a VALIDATOR. You may NOT:\n- Write or modify any code files\n- \"Fix\" issues you find - that's the worker's job\n- Make implementation decisions\n\nYou MUST:\n- Validate and report findings\n- Provide clear, actionable feedback\n- Show evidence for every claim\n\n## YOUR MISSION\nEnsure code quality meets production standards.\n\n## CHECKS TO PERFORM\n1. **Error Handling**\n   - No swallowed exceptions\n   - Proper error propagation\n   - Meaningful error messages\n   - Appropriate logging\n\n2. **Code Structure**\n   - Single responsibility principle\n   - No overly complex functions\n   - Clear naming conventions\n   - No dead code\n   - No duplicated code\n\n3. **Type Safety**\n   - Proper types/interfaces (if applicable)\n   - Null/undefined handling\n   - Input validation\n\n4. **Testing**\n   - Tests exist for new/changed code\n   - Edge cases covered\n   - Error cases covered\n\n5. **Standards**\n   - Run linter, report violations\n   - Check for TODO/FIXME/HACK that need addressing\n   - Check for debug code left in\n\n## EVIDENCE REQUIREMENTS\nRun actual commands, show actual output. No assumptions."
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "{{result.summary}}",
+              "data": {
+                "approved": "{{result.approved}}",
+                "errors": "{{result.issues}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: validator-code-quality",
+              "data": {
+                "agentId": "validator-code-quality",
+                "role": "validator",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "summary": { "type": "string" },
+          "criteriaResults": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "status": { "type": "string" },
+                "evidence": { "type": "object" },
+                "issues": { "type": "string" }
+              }
+            }
+          },
+          "verdict": { "type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "CANNOT_VALIDATE"] },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "areasOfConcern": { "type": "array", "items": { "type": "string" } },
+          "issues": { "type": "string" }
+        },
+        "required": ["approved", "summary", "verdict", "confidence"]
+      }
+    },
+    {
+      "id": "validator-security",
+      "role": "validator",
+      "modelLevel": "level3",
+      "maxIterations": 25,
+      "maxRetries": 3,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "PLAN_READY", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "IMPLEMENTATION_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [{ "topic": "IMPLEMENTATION_READY", "action": "execute_task" }],
+      "prompt": {
+        "system": "You are a SECURITY VALIDATOR.\n\n## 🔴 VALIDATION-ONLY MODE\nYou are a VALIDATOR. You may NOT:\n- Write or modify any code files\n- \"Fix\" issues you find - that's the worker's job\n- Make implementation decisions\n\nYou MUST:\n- Validate and report findings\n- Provide clear, actionable feedback\n- Show evidence for every claim\n\n## YOUR MISSION\nIdentify security vulnerabilities in the implementation.\n\n## SECURITY CHECKS\n1. **Input Validation**\n   - Are all user inputs validated/sanitized?\n   - SQL injection risks?\n   - Command injection risks?\n   - Path traversal risks?\n\n2. **Authentication/Authorization**\n   - Proper access control checks?\n   - Privilege escalation possible?\n\n3. **Data Handling**\n   - Sensitive data properly protected?\n   - Credentials hardcoded?\n   - Secrets in logs?\n\n4. **Dependencies**\n   - Run security audit (npm audit, etc.)\n   - Known vulnerable packages?\n\n5. **Common Vulnerabilities**\n   - XSS risks (if web)\n   - CSRF risks\n   - Insecure deserialization\n   - Debug mode enabled?\n\n## EVIDENCE REQUIREMENTS\n- Run actual security scans where possible\n- Show specific code with vulnerabilities\n- Provide fix recommendations\n- Never approve with known security issues"
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "{{result.summary}}",
+              "data": {
+                "approved": "{{result.approved}}",
+                "errors": "{{result.issues}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: validator-security",
+              "data": {
+                "agentId": "validator-security",
+                "role": "validator",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "summary": { "type": "string" },
+          "vulnerabilities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+                },
+                "description": { "type": "string" },
+                "location": { "type": "string" },
+                "fix": { "type": "string" }
+              }
+            }
+          },
+          "verdict": { "type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "CANNOT_VALIDATE"] },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "areasOfConcern": { "type": "array", "items": { "type": "string" } },
+          "issues": { "type": "string" }
+        },
+        "required": ["approved", "summary", "verdict", "confidence"]
+      }
+    },
+    {
+      "id": "validator-adversarial",
+      "role": "validator",
+      "modelLevel": "level3",
+      "maxIterations": 30,
+      "maxRetries": 3,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "PLAN_READY", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "IMPLEMENTATION_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [{ "topic": "IMPLEMENTATION_READY", "action": "execute_task" }],
+      "prompt": {
+        "system": "You are an ADVERSARIAL TESTER.\n\n## 🔴 VALIDATION-ONLY MODE\nYou are a VALIDATOR. You may NOT:\n- Write or modify any code files\n- \"Fix\" issues you find - that's the worker's job\n- Make implementation decisions\n\nYou MUST:\n- Validate and report findings\n- Provide clear, actionable feedback\n- Show evidence for every claim\n\n## YOUR MISSION\nActively try to BREAK the implementation. Find bugs the other validators missed.\n\n## TESTING STRATEGY\n1. **USE IT YOURSELF FIRST**\n   - Read the issue requirements\n   - Figure out how to invoke the new code\n   - Run it with normal inputs - does it work?\n\n2. **BOUNDARY CONDITIONS**\n   - Empty inputs, null, undefined\n   - Maximum/minimum values\n   - Off-by-one errors\n   - Exactly at boundaries\n\n3. **MALICIOUS INPUTS**\n   - SQL/command injection attempts\n   - Path traversal (../../../etc/passwd)\n   - Unicode edge cases\n   - Extremely long strings\n   - Special characters\n\n4. **RACE CONDITIONS**\n   - Concurrent access\n   - Double-submit problems\n   - Timing-dependent behavior\n\n5. **ERROR PATHS**\n   - Network failures\n   - Database failures\n   - Invalid state transitions\n   - Timeouts\n\n6. **BUSINESS LOGIC FLAWS**\n   - Negative values where positive expected\n   - Bypassing workflow steps\n   - Unexpected state combinations\n\n## EVIDENCE REQUIREMENTS\n- For EVERY test: show command, expected result, actual result\n- If you find a bug: provide reproducible steps\n- 'Tests pass' is NOT evidence - actively break it\n\n## CRITICAL RULE\nYou MUST actually RUN the code. Reading code is not testing.\nIf you cannot run it, status = CANNOT_VALIDATE"
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "{{result.summary}}",
+              "data": {
+                "approved": "{{result.approved}}",
+                "errors": "{{result.issues}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: validator-adversarial",
+              "data": {
+                "agentId": "validator-adversarial",
+                "role": "validator",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "summary": { "type": "string" },
+          "testsRun": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "category": { "type": "string" },
+                "description": { "type": "string" },
+                "command": { "type": "string" },
+                "expected": { "type": "string" },
+                "actual": { "type": "string" },
+                "status": { "type": "string", "enum": ["PASS", "FAIL", "ERROR"] }
+              }
+            }
+          },
+          "bugsFound": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": { "type": "string" },
+                "description": { "type": "string" },
+                "reproSteps": { "type": "string" }
+              }
+            }
+          },
+          "verdict": { "type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "CANNOT_VALIDATE"] },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "areasOfConcern": { "type": "array", "items": { "type": "string" } },
+          "issues": { "type": "string" }
+        },
+        "required": ["approved", "summary", "verdict", "confidence"]
+      }
+    },
+    {
+      "id": "validator-edge-cases",
+      "role": "validator",
+      "modelLevel": "level3",
+      "maxIterations": 25,
+      "maxRetries": 3,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "PLAN_READY", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "IMPLEMENTATION_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [{ "topic": "IMPLEMENTATION_READY", "action": "execute_task" }],
+      "prompt": {
+        "system": "You are an EDGE CASE VALIDATOR specializing in finding subtle bugs.\n\n## 🔴 VALIDATION-ONLY MODE\nYou are a VALIDATOR. You may NOT:\n- Write or modify any code files\n- \"Fix\" issues you find - that's the worker's job\n- Make implementation decisions\n\nYou MUST:\n- Validate and report findings\n- Provide clear, actionable feedback\n- Show evidence for every claim\n\n## YOUR MISSION\nFind edge cases and corner cases that other validators miss.\n\n## EDGE CASE CATEGORIES\n\n### Data Type Edges\n- Empty string vs null vs undefined\n- 0 vs false vs '' vs null\n- Floating point precision issues\n- Integer overflow/underflow\n- NaN propagation\n- Infinity handling\n\n### String Edges\n- Unicode: emojis, RTL text, combining characters\n- Null bytes in strings\n- Very long strings\n- Whitespace-only strings\n- Strings that look like numbers\n\n### Array/Collection Edges\n- Empty collections\n- Single element\n- Sparse arrays with holes\n- Duplicate elements\n- Circular references\n\n### Date/Time Edges\n- Leap years, DST transitions\n- Timezone boundaries\n- Invalid dates\n- Date parsing edge cases\n\n### State Edges\n- Uninitialized state\n- Partial state (some fields missing)\n- Stale state from previous versions\n- Corrupted state recovery\n\n### Concurrency Edges\n- First request vs subsequent\n- Cache cold start\n- Connection pool exhaustion\n- Token expiration during operation\n\n## EVIDENCE REQUIREMENTS\n- Actually RUN the code with edge case inputs\n- Show exact input, expected output, actual output\n- Provide reproduction steps for any bugs"
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "{{result.summary}}",
+              "data": {
+                "approved": "{{result.approved}}",
+                "errors": "{{result.issues}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: validator-edge-cases",
+              "data": {
+                "agentId": "validator-edge-cases",
+                "role": "validator",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "summary": { "type": "string" },
+          "edgeCaseTests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "category": { "type": "string" },
+                "input": { "type": "string" },
+                "expected": { "type": "string" },
+                "actual": { "type": "string" },
+                "status": { "type": "string" }
+              }
+            }
+          },
+          "verdict": { "type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "CANNOT_VALIDATE"] },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "areasOfConcern": { "type": "array", "items": { "type": "string" } },
+          "issues": { "type": "string" }
+        },
+        "required": ["approved", "summary", "verdict", "confidence"]
+      }
+    },
+    {
+      "id": "validator-regression",
+      "role": "validator",
+      "modelLevel": "level3",
+      "maxIterations": 25,
+      "maxRetries": 3,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "PLAN_READY", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "IMPLEMENTATION_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [{ "topic": "IMPLEMENTATION_READY", "action": "execute_task" }],
+      "prompt": {
+        "system": "You are a REGRESSION VALIDATOR.\n\n## 🔴 VALIDATION-ONLY MODE\nYou are a VALIDATOR. You may NOT:\n- Write or modify any code files\n- \"Fix\" issues you find - that's the worker's job\n- Make implementation decisions\n\nYou MUST:\n- Validate and report findings\n- Provide clear, actionable feedback\n- Show evidence for every claim\n\n## YOUR MISSION\nEnsure the changes don't break existing functionality.\n\n## REGRESSION CHECKS\n1. **Run existing test suite**\n   - All existing tests must still pass\n   - Document any test failures\n\n2. **Check related functionality**\n   - Identify code that calls/uses the modified code\n   - Verify those callers still work correctly\n   - Check for subtle behavior changes\n\n3. **Check error handling paths**\n   - Did error messages change?\n   - Do error handlers still work?\n   - Are error codes consistent?\n\n4. **Check data compatibility**\n   - Will existing data still work?\n   - Are migrations needed?\n   - Is backward compatibility maintained?\n\n5. **Check configuration**\n   - Do existing configs still work?\n   - Are default values preserved?\n   - New required config values?\n\n## EVIDENCE REQUIREMENTS\n- Run the full test suite, show results\n- Manually test related functionality\n- Document any behavior changes, even if intentional"
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "{{result.summary}}",
+              "data": {
+                "approved": "{{result.approved}}",
+                "errors": "{{result.issues}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: validator-regression",
+              "data": {
+                "agentId": "validator-regression",
+                "role": "validator",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "summary": { "type": "string" },
+          "testResults": {
+            "type": "object",
+            "properties": {
+              "totalTests": { "type": "number" },
+              "passed": { "type": "number" },
+              "failed": { "type": "number" },
+              "skipped": { "type": "number" }
+            }
+          },
+          "regressions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "area": { "type": "string" },
+                "description": { "type": "string" },
+                "severity": { "type": "string" }
+              }
+            }
+          },
+          "verdict": { "type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "CANNOT_VALIDATE"] },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "areasOfConcern": { "type": "array", "items": { "type": "string" } },
+          "issues": { "type": "string" }
+        },
+        "required": ["approved", "summary", "verdict", "confidence"]
+      }
+    },
+    {
+      "id": "validator-behavior",
+      "role": "validator",
+      "modelLevel": "level3",
+      "maxIterations": 25,
+      "maxRetries": 3,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "PLAN_READY", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "IMPLEMENTATION_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [{ "topic": "IMPLEMENTATION_READY", "action": "execute_task" }],
+      "prompt": {
+        "system": "You are a BEHAVIORAL VALIDATOR.\n\n## 🔴 VALIDATION-ONLY MODE\nYou are a VALIDATOR. You may NOT:\n- Write or modify any code files\n- \"Fix\" issues you find - that's the worker's job\n- Make implementation decisions\n\nYou MUST:\n- Validate and report findings\n- Provide clear, actionable feedback\n- Show evidence for every claim\n\n## YOUR MISSION\nVerify the implementation behaves correctly by actually using it.\n\n## VALIDATION APPROACH\n1. **Understand the requirements**\n   - Read the original task/issue carefully\n   - Understand what 'done' looks like\n\n2. **Exercise the happy path**\n   - Use the feature as a normal user would\n   - Verify it does what was requested\n   - Check the output matches expectations\n\n3. **Exercise error paths**\n   - Provide invalid inputs\n   - Check error messages are helpful\n   - Verify graceful degradation\n\n4. **Check side effects**\n   - Does it modify state correctly?\n   - Does it clean up after itself?\n   - Are there unintended side effects?\n\n5. **Check integration**\n   - Does it work with the rest of the system?\n   - Are there coordination issues?\n\n## EVIDENCE REQUIREMENTS\n- Run actual commands, show actual output\n- Take screenshots if UI is involved\n- Document step-by-step what you did\n- Clearly state whether each requirement is met"
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "{{result.summary}}",
+              "data": {
+                "approved": "{{result.approved}}",
+                "errors": "{{result.issues}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: validator-behavior",
+              "data": {
+                "agentId": "validator-behavior",
+                "role": "validator",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "approved": { "type": "boolean" },
+          "summary": { "type": "string" },
+          "behaviorTests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scenario": { "type": "string" },
+                "steps": { "type": "string" },
+                "expected": { "type": "string" },
+                "actual": { "type": "string" },
+                "status": { "type": "string" }
+              }
+            }
+          },
+          "verdict": { "type": "string", "enum": ["PASS", "FAIL", "PARTIAL", "CANNOT_VALIDATE"] },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "areasOfConcern": { "type": "array", "items": { "type": "string" } },
+          "issues": { "type": "string" }
+        },
+        "required": ["approved", "summary", "verdict", "confidence"]
+      }
+    },
+    {
+      "id": "synthesizer",
+      "role": "synthesizer",
+      "modelLevel": "level2",
+      "maxIterations": 10,
+      "timeout": 0,
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "STATE_SNAPSHOT", "priority": "required", "strategy": "latest", "amount": 1 },
+          { "topic": "PLAN_READY", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "IMPLEMENTATION_READY",
+            "priority": "high",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "VALIDATION_RESULT",
+            "priority": "high",
+            "since": "cluster_start",
+            "strategy": "all",
+            "amount": 20
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [
+        {
+          "topic": "VALIDATION_RESULT",
+          "logic": {
+            "engine": "javascript",
+            "script": "const validators = cluster.getAgentsByRole('validator');\nconst lastImpl = ledger.findLast({ topic: 'IMPLEMENTATION_READY' });\nif (!lastImpl) return false;\nconst validatorIds = new Set(validators.map(v => v.id));\nconst results = ledger.query({ topic: 'VALIDATION_RESULT', since: lastImpl.timestamp });\nconst latestByValidator = new Map();\nfor (const msg of results) {\n  if (!validatorIds.has(msg.sender)) continue;\n  latestByValidator.set(msg.sender, msg);\n}\nif (latestByValidator.size < validators.length) return false;\nfor (const [id, msg] of latestByValidator) {\n  const approved = msg?.content?.data?.approved;\n  if (approved === false || approved === 'false') return false;\n}\nreturn true;"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "prompt": {
+        "system": "You are a COMPLETION SYNTHESIZER. All validators have approved the implementation.\n\n## YOUR MISSION\nProduce a completion summary that captures what was done.\n\n## SUMMARY STRUCTURE\n\n### What Was Implemented\n- List the key changes made\n- Reference specific files modified\n- Note any architectural decisions\n\n### What Was Validated\n- Summarize each validator's findings\n- Note any issues that were found and fixed during iteration\n- Highlight thorough testing that was done\n\n### Lingering Concerns\n- Any areas that validators couldn't fully verify\n- Edge cases that might need monitoring\n- Technical debt introduced (if any)\n\n### PR Description Draft\nProvide a ready-to-use PR description with:\n- Summary (1-2 sentences)\n- Changes made (bullet points)\n- Testing done (bullet points)\n- Any notes for reviewers\n\n## OUTPUT\nPublish COMPLETION_SUMMARY with the above sections."
+      },
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "COMPLETION_SUMMARY",
+            "content": {
+              "text": "{{result.summary}}",
+              "data": {
+                "implemented": "{{result.implemented}}",
+                "validated": "{{result.validated}}",
+                "concerns": "{{result.concerns}}",
+                "prDescription": "{{result.prDescription}}"
+              }
+            }
+          }
+        },
+        "onFailure": {
+          "action": "publish_message",
+          "config": {
+            "topic": "AGENT_FAILED",
+            "content": {
+              "text": "Agent failed: synthesizer",
+              "data": {
+                "agentId": "synthesizer",
+                "role": "synthesizer",
+                "error": "{{error.message}}"
+              }
+            }
+          }
+        }
+      },
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string" },
+          "implemented": { "type": "array", "items": { "type": "string" } },
+          "validated": { "type": "array", "items": { "type": "string" } },
+          "concerns": { "type": "array", "items": { "type": "string" } },
+          "prDescription": { "type": "string" }
+        },
+        "required": ["summary", "prDescription"]
+      }
+    },
+    {
+      "id": "completion-detector",
+      "role": "orchestrator",
+      "modelLevel": "level1",
+      "maxIterations": 1,
+      "timeout": 0,
+      "triggers": [
+        {
+          "topic": "COMPLETION_SUMMARY",
+          "action": "stop_cluster"
+        }
+      ],
+      "prompt": {
+        "system": "Completion detector - stops cluster when synthesizer produces completion summary."
+      }
+    }
+  ]
+}
