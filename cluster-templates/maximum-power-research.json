@@ -525,16 +525,11 @@
         "onComplete": {
           "action": "publish_message",
           "config": {
-            "topic": "VERIFICATION_RESULT",
-            "content": {
-              "text": "Verifier Alpha results ready",
-              "data": {
-                "verifierId": "verifier-alpha",
-                "scores": "{{result.scores}}",
-                "summary": "{{result.summary}}",
-                "consensusReached": "{{result.consensusReached}}"
-              }
-            }
+            "topic": "VERIFICATION_RESULT"
+          },
+          "transform": {
+            "engine": "javascript",
+            "script": "const hasUnresolved = (result.scores || []).some(s => s.verdict === 'UNCERTAIN' || s.verdict === 'UNLIKELY'); return { topic: 'VERIFICATION_RESULT', content: { text: result.summary || 'Verification complete', data: { verifierId: 'verifier-alpha', scores: result.scores, summary: result.summary, consensusReached: !hasUnresolved } } };"
           }
         },
         "onFailure": {
@@ -575,10 +570,9 @@
             }
           },
           "summary": { "type": "string" },
-          "consensusReached": { "type": "boolean" },
           "uncertainCount": { "type": "number" }
         },
-        "required": ["scores", "summary", "consensusReached"]
+        "required": ["scores", "summary"]
       }
     },
     {
@@ -628,16 +622,11 @@
         "onComplete": {
           "action": "publish_message",
           "config": {
-            "topic": "VERIFICATION_RESULT",
-            "content": {
-              "text": "Verifier Beta results ready",
-              "data": {
-                "verifierId": "verifier-beta",
-                "scores": "{{result.scores}}",
-                "summary": "{{result.summary}}",
-                "consensusReached": "{{result.consensusReached}}"
-              }
-            }
+            "topic": "VERIFICATION_RESULT"
+          },
+          "transform": {
+            "engine": "javascript",
+            "script": "const hasUnresolved = (result.scores || []).some(s => s.verdict === 'UNCERTAIN' || s.verdict === 'UNLIKELY'); return { topic: 'VERIFICATION_RESULT', content: { text: result.summary || 'Verification complete', data: { verifierId: 'verifier-beta', scores: result.scores, summary: result.summary, consensusReached: !hasUnresolved } } };"
           }
         },
         "onFailure": {
@@ -678,10 +667,9 @@
             }
           },
           "summary": { "type": "string" },
-          "consensusReached": { "type": "boolean" },
           "uncertainCount": { "type": "number" }
         },
-        "required": ["scores", "summary", "consensusReached"]
+        "required": ["scores", "summary"]
       }
     },
     {
@@ -718,13 +706,13 @@
           "topic": "VERIFICATION_RESULT",
           "logic": {
             "engine": "javascript",
-            "script": "const verifiers = cluster.getAgentsByRole('verifier');\nconst results = ledger.query({ topic: 'VERIFICATION_RESULT' });\nconst verifierIds = new Set(verifiers.map(v => v.id));\nconst received = new Set();\nfor (const msg of results) {\n  if (verifierIds.has(msg.sender)) received.add(msg.sender);\n}\nif (received.size < verifiers.length) return false;\nconst latestByVerifier = new Map();\nfor (const msg of results) {\n  if (!verifierIds.has(msg.sender)) continue;\n  const existing = latestByVerifier.get(msg.sender);\n  if (!existing || msg.timestamp > existing.timestamp) {\n    latestByVerifier.set(msg.sender, msg);\n  }\n}\nfor (const [id, msg] of latestByVerifier) {\n  if (msg?.content?.data?.consensusReached === false) return false;\n}\nconst explorers = cluster.getAgentsByRole('explorer');\nconst latestVerificationTime = Math.max(...[...latestByVerifier.values()].map(m => m.timestamp));\nconst newFindings = ledger.query({ topic: 'FINDINGS_READY', since: latestVerificationTime });\nconst explorerIds = new Set(explorers.map(e => e.id));\nconst newExplorerFindings = newFindings.filter(m => explorerIds.has(m.sender));\nif (newExplorerFindings.length > 0) return false;\nreturn true;"
+            "script": "const verifiers = cluster.getAgentsByRole('verifier');\nconst results = ledger.query({ topic: 'VERIFICATION_RESULT' });\nconst verifierIds = new Set(verifiers.map(v => v.id));\nconst received = new Set();\nfor (const msg of results) {\n  if (verifierIds.has(msg.sender)) received.add(msg.sender);\n}\nif (received.size < verifiers.length) return false;\nconst latestByVerifier = new Map();\nfor (const msg of results) {\n  if (!verifierIds.has(msg.sender)) continue;\n  const existing = latestByVerifier.get(msg.sender);\n  if (!existing || msg.timestamp > existing.timestamp) {\n    latestByVerifier.set(msg.sender, msg);\n  }\n}\nconst explorers = cluster.getAgentsByRole('explorer');\nconst latestVerificationTime = Math.max(...[...latestByVerifier.values()].map(m => m.timestamp));\nconst newFindings = ledger.query({ topic: 'FINDINGS_READY', since: latestVerificationTime });\nconst explorerIds = new Set(explorers.map(e => e.id));\nconst newExplorerFindings = newFindings.filter(m => explorerIds.has(m.sender));\nif (newExplorerFindings.length > 0) return false;\nreturn true;"
           },
           "action": "execute_task"
         }
       ],
       "prompt": {
-        "system": "You are the SYNTHESIZER - you produce the final research report.\n\n## 🔴 READ-ONLY MODE (with one exception)\nYou may NOT modify any existing files.\n\nYou MUST write the final report to the file specified in the original task/prompt.\nIf no file is specified, write to `RESEARCH_FINDINGS.md` in the project root.\n\n## YOUR MISSION\nSynthesize all explorer findings (from 4 explorers) and verifier scores (from 2 verifiers) into a comprehensive report.\n\n## REPORT STRUCTURE\n\n### Executive Summary\n- Total findings analyzed\n- Confirmed issues by severity (critical/high/medium/low/info)\n- Breakdown by category (logic, security, docs, architecture)\n- Key patterns observed\n- Top 5 recommended actions\n\n### Findings Table\n| ID | Title | Severity | Category | Explorer | Alpha | Beta | Convergence |\n|----|-------|----------|----------|----------|-------|------|-------------|\n\nWhere:\n- Alpha/Beta = verdict from each verifier\n- Convergence = number of explorers who found similar issues\n\n### Confirmed Findings (Detail)\nFor each CONFIRMED or LIKELY finding:\n- Full description\n- Evidence from explorer\n- Verifier notes from both Alpha and Beta\n- File/location\n- Recommended action\n\n### Disputed Findings\nFindings where verifiers disagreed.\nInclude both perspectives with their evidence.\n\n### Unresolved Findings  \nFindings that remained UNCERTAIN after all iterations.\nInclude for human review.\n\n### Statistics\n- Findings by severity: breakdown\n- Findings by category: breakdown  \n- Findings by explorer: who found what\n- Confirmation rate: % confirmed by both verifiers\n- Verifier agreement rate: how often Alpha and Beta agreed\n- Convergence stats: findings flagged by multiple explorers\n\n### Methodology\n- Explorers involved and their focus areas\n- Files/areas examined\n- Approach taken\n\n## OUTPUT\nWrite the report file, then publish REPORT_READY."
+        "system": "You are the SYNTHESIZER - you produce the final research report.\n\n## 🔴 READ-ONLY MODE (with one exception)\nYou may NOT modify any existing files.\n\nYou MUST write the final report to the file specified in the original task/prompt.\nIf no file is specified, write to `RESEARCH_FINDINGS.md` in the project root.\n\n## YOUR MISSION\nSynthesize all explorer findings (from 4 explorers) and verifier scores (from 2 verifiers) into a comprehensive report.\n\n## HANDLING MULTIPLE FINDINGS FROM SAME EXPLORER\nIf an explorer published multiple FINDINGS_READY messages (due to re-execution after verification challenges), use only the LATEST version of their findings. Earlier versions were superseded by the explorer's revised analysis.\n\n## UNRESOLVED FINDINGS\nSome findings may remain UNCERTAIN or UNLIKELY after explorers exhausted their iterations (maxIterations reached). For these findings:\n- Include in the report under \"Unresolved Findings\" section\n- Note that verification was inconclusive despite explorer re-investigation\n- Flag for human review with specific questions that need answering\n- Do NOT treat them as confirmed - they require further investigation\n\n## REPORT STRUCTURE\n\n### Executive Summary\n- Total findings analyzed\n- Confirmed issues by severity (critical/high/medium/low/info)\n- Breakdown by category (logic, security, docs, architecture)\n- Key patterns observed\n- Top 5 recommended actions\n\n### Findings Table\n| ID | Title | Severity | Category | Explorer | Alpha | Beta | Convergence |\n|----|-------|----------|----------|----------|-------|------|-------------|\n\nWhere:\n- Alpha/Beta = verdict from each verifier\n- Convergence = number of explorers who found similar issues\n\n### Confirmed Findings (Detail)\nFor each CONFIRMED or LIKELY finding:\n- Full description\n- Evidence from explorer\n- Verifier notes from both Alpha and Beta\n- File/location\n- Recommended action\n\n### Disputed Findings\nFindings where verifiers disagreed.\nInclude both perspectives with their evidence.\n\n### Unresolved Findings\nFindings that remained UNCERTAIN or UNLIKELY after all verification iterations.\n- Include the original finding\n- Include verifier concerns\n- Flag specific questions for human review\n\n### Statistics\n- Findings by severity: breakdown\n- Findings by category: breakdown  \n- Findings by explorer: who found what\n- Confirmation rate: % confirmed by both verifiers\n- Verifier agreement rate: how often Alpha and Beta agreed\n- Convergence stats: findings flagged by multiple explorers\n\n### Methodology\n- Explorers involved and their focus areas\n- Files/areas examined\n- Approach taken\n\n## OUTPUT\nWrite the report file, then publish REPORT_READY."
       },
       "hooks": {
         "onComplete": {
