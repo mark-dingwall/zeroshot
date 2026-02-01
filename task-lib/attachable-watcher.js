@@ -315,6 +315,15 @@ server.on('clientDetach', ({ clientId }) => {
 try {
   await server.start();
 
+  // Pipe context via PTY stdin (E2BIG mitigation - avoids ARG_MAX limits)
+  if (config.context) {
+    try {
+      server.write(config.context);
+    } catch (err) {
+      log(`[${Date.now()}][ERROR] Failed to write context to PTY: ${err.message}\n`);
+    }
+  }
+
   updateTask(taskId, {
     pid: server.pid,
     socketPath,

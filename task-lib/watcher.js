@@ -36,8 +36,20 @@ const finalArgs = [...args];
 const child = spawn(command, finalArgs, {
   cwd,
   env,
-  stdio: ['ignore', 'pipe', 'pipe'],
+  // stdin: 'pipe' enables E2BIG mitigation - context piped via stdin instead of args
+  stdio: ['pipe', 'pipe', 'pipe'],
 });
+
+// Pipe context via stdin (E2BIG mitigation - avoids ARG_MAX limits)
+// Handle stdin errors (EPIPE if child dies before write completes)
+child.stdin.on('error', (err) => {
+  log(`[${Date.now()}][ERROR] stdin write failed: ${err.message}\n`);
+});
+
+if (config.context) {
+  child.stdin.write(config.context);
+}
+child.stdin.end();
 
 updateTask(taskId, { pid: child.pid });
 
@@ -77,16 +89,20 @@ function maybeHandleFatalError(line, timestamp) {
 
   try {
     child.kill('SIGTERM');
-  } catch {
-    // Ignore - process may already be dead
+  } catch (err) {
+    if (err.code !== 'ESRCH') {
+      log(`[${Date.now()}][WARN] Failed to send SIGTERM: ${err.message}\n`);
+    }
   }
 
   setTimeout(() => {
     if (child.exitCode === null) {
       try {
         child.kill('SIGKILL');
-      } catch {
-        // Ignore - process may already be dead
+      } catch (err) {
+        if (err.code !== 'ESRCH') {
+          log(`[${Date.now()}][WARN] Failed to send SIGKILL: ${err.message}\n`);
+        }
       }
     }
   }, 5000);

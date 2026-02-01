@@ -1,10 +1,55 @@
 import chalk from 'chalk';
 import { spawnTask } from '../runner.js';
 
+/**
+ * Read all data from stdin until EOF
+ * @param {number} timeoutMs - Timeout in milliseconds (default: 30000)
+ * @returns {Promise<string>} The data read from stdin
+ * @throws {Error} If stdin read times out
+ */
+function readStdin(timeoutMs = parseInt(process.env.ZEROSHOT_STDIN_TIMEOUT, 10) || 30000) {
+  const chunks = [];
+  let timeoutId;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const partialBytes = chunks.reduce((acc, c) => acc + c.length, 0);
+      process.stdin.destroy();
+      reject(
+        new Error(
+          `stdin read timeout after ${timeoutMs}ms (received ${partialBytes} bytes). ` +
+            `Consider increasing ZEROSHOT_STDIN_TIMEOUT.`
+        )
+      );
+    }, timeoutMs);
+  });
+
+  const readPromise = (async () => {
+    try {
+      for await (const chunk of process.stdin) {
+        chunks.push(chunk);
+      }
+      return Buffer.concat(chunks).toString('utf8');
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  })();
+
+  return Promise.race([readPromise, timeoutPromise]);
+}
+
 export async function runTask(prompt, options = {}) {
+  // If no prompt provided, read from stdin (enables piping large prompts)
   if (!prompt || prompt.trim().length === 0) {
-    console.log(chalk.red('Error: Prompt is required'));
-    process.exit(1);
+    if (process.stdin.isTTY) {
+      console.log(chalk.red('Error: Prompt is required (provide as argument or pipe via stdin)'));
+      process.exit(1);
+    }
+    prompt = await readStdin();
+    if (!prompt || prompt.trim().length === 0) {
+      console.log(chalk.red('Error: No prompt provided via stdin'));
+      process.exit(1);
+    }
   }
 
   const outputFormat = options.outputFormat || 'stream-json';
@@ -55,3 +100,6 @@ export async function runTask(prompt, options = {}) {
 
   return task;
 }
+
+// Export readStdin for testing
+export { readStdin };
