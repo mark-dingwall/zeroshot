@@ -151,6 +151,38 @@ describe('TemplateResolver', function () {
       assert.ok(metaCoordinator, 'meta-coordinator should be present for CRITICAL tasks');
     });
 
+    it('should preserve numeric types for single-placeholder values', function () {
+      const resolved = resolver.resolve('single-worker', {
+        task_type: 'TASK',
+        complexity: 'TRIVIAL',
+        max_tokens: 50000,
+        max_iterations: 4,
+        worker_level: 'level1',
+      });
+      const worker = resolved.agents[0];
+      assert.strictEqual(typeof worker.contextStrategy.maxTokens, 'number');
+      assert.strictEqual(worker.contextStrategy.maxTokens, 50000);
+    });
+
+    it('should preserve boolean types for single-placeholder values', function () {
+      const resolved = resolver.resolve('review-workflow', {
+        tier: 'vector',
+        analyst_level: 'level2',
+        validator_level: 'level2',
+        validator_count: 2,
+        max_iterations: 4,
+        max_tokens: 150000,
+        artifact_scope: 'CHAIN',
+        content_domain: 'GENERAL',
+        has_test_content: false,
+        is_chain: false,
+        is_sensitive: false,
+      });
+      const analyst = resolved.agents.find((a) => a.id === 'analyst');
+      assert.strictEqual(typeof analyst.maxIterations, 'number');
+      assert.strictEqual(analyst.maxIterations, 4);
+    });
+
     it('should fail on missing required params', function () {
       assert.throws(() => resolver.resolve('single-worker', {}), /Missing required params/);
     });

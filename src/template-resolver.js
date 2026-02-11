@@ -121,6 +121,12 @@ class TemplateResolver {
     }
 
     if (typeof obj === 'string') {
+      // Preserve type for pure placeholder values (e.g., "{{max_tokens}}" → 100000 not "100000")
+      const singlePlaceholder = obj.match(/^\{\{(\w+)\}\}$/);
+      if (singlePlaceholder) {
+        const val = params[singlePlaceholder[1]];
+        if (val !== undefined) return val;
+      }
       return this._resolveString(obj, params);
     }
 
