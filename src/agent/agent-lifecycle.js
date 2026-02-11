@@ -323,17 +323,32 @@ async function executeTriggerAction(agent, trigger, message) {
     const packageRoot = path.join(__dirname, '..', '..');
     agent._log(`Executing system command: ${config.command}`);
 
-    const output = execSync(config.command, {
-      input: stdinData,
-      encoding: 'utf-8',
-      timeout: config.timeout || 30000,
-      cwd: agent.cwd || process.cwd(),
-      env: {
-        ...process.env,
-        ZEROSHOT_ROOT: packageRoot,
-        CLUSTER_ID: agent.cluster?.id || '',
-      },
-    });
+    let output;
+    try {
+      output = execSync(config.command, {
+        input: stdinData,
+        encoding: 'utf-8',
+        timeout: config.timeout || 30000,
+        cwd: agent.cwd || process.cwd(),
+        env: {
+          ...process.env,
+          ZEROSHOT_ROOT: packageRoot,
+          CLUSTER_ID: agent.cluster?.id || '',
+        },
+      });
+    } catch (execError) {
+      agent._log(`System command failed: ${execError.message}`);
+      agent._publish({
+        topic: 'CLUSTER_FAILED',
+        receiver: 'system',
+        content: {
+          text: `System command failed: ${config.command} — ${execError.message}`,
+          data: { reason: 'system_command_error', command: config.command },
+        },
+      });
+      agent.state = 'failed';
+      return;
+    }
 
     if (output && output.trim()) {
       agent._log(`System command output: ${output.trim()}`);

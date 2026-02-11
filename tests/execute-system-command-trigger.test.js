@@ -149,7 +149,7 @@ describe('execute_system_command trigger action', function () {
     );
   });
 
-  it('should throw on command failure (non-zero exit)', async function () {
+  it('should publish CLUSTER_FAILED on command failure (non-zero exit)', async function () {
     const agent = createMockAgent();
     const trigger = {
       action: 'execute_system_command',
@@ -157,13 +157,12 @@ describe('execute_system_command trigger action', function () {
     };
     const message = { content: { text: 'test' }, topic: 'TEST' };
 
-    await assert.rejects(
-      () => executeTriggerAction(agent, trigger, message),
-      (err) => {
-        assert.ok(err.status === 1 || err.message.includes('exit'));
-        return true;
-      }
-    );
+    await executeTriggerAction(agent, trigger, message);
+
+    assert.strictEqual(agent.state, 'failed');
+    const failMsg = agent.published.find((m) => m.topic === 'CLUSTER_FAILED');
+    assert.ok(failMsg, 'Should publish CLUSTER_FAILED on command error');
+    assert.strictEqual(failMsg.content.data.reason, 'system_command_error');
   });
 
   it('should respect config.timeout', async function () {
@@ -178,15 +177,14 @@ describe('execute_system_command trigger action', function () {
     const message = { content: { text: 'test' }, topic: 'TEST' };
 
     const start = Date.now();
-    await assert.rejects(
-      () => executeTriggerAction(agent, trigger, message),
-      () => {
-        const elapsed = Date.now() - start;
-        // Should fail quickly (within 2s) due to timeout, not wait 10s
-        assert.ok(elapsed < 5000, `Took too long: ${elapsed}ms`);
-        return true;
-      }
-    );
+    await executeTriggerAction(agent, trigger, message);
+    const elapsed = Date.now() - start;
+
+    // Should fail quickly (within 2s) due to timeout, not wait 10s
+    assert.ok(elapsed < 5000, `Took too long: ${elapsed}ms`);
+    assert.strictEqual(agent.state, 'failed');
+    const failMsg = agent.published.find((m) => m.topic === 'CLUSTER_FAILED');
+    assert.ok(failMsg, 'Should publish CLUSTER_FAILED on timeout');
   });
 
   it('should handle empty stdin when message has no content', async function () {
