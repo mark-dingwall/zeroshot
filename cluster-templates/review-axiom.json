@@ -1,0 +1,62 @@
+{
+  "name": "Design Review (Axiom)",
+  "description": "Maximum scrutiny design review. All perspectives, 2-3 validators (varies by content flags), 5 max iterations.",
+  "agents": [
+    {
+      "id": "review-router",
+      "role": "conductor",
+      "modelLevel": "level1",
+      "useDirectApi": true,
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "routed": {
+            "type": "boolean",
+            "description": "Always true - pass-through routing"
+          }
+        },
+        "required": ["routed"]
+      },
+      "prompt": {
+        "system": "You are a pass-through router. Output {\"routed\": true}. Nothing else."
+      },
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 }
+        ],
+        "format": "chronological",
+        "maxTokens": 1000
+      },
+      "triggers": [
+        {
+          "topic": "ISSUE_OPENED",
+          "logic": {
+            "engine": "javascript",
+            "script": "return message.sender === 'system' && !message.metadata?._republished;"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "transform": {
+            "engine": "javascript",
+            "script": "const taskText = triggeringMessage.content?.text || '';\nif (!taskText || !taskText.trim()) throw new Error('ISSUE_OPENED has no text content — nothing to review');\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: '[REVIEW:AXIOM] Pass-through routing to axiom tier',\n    data: {\n      operations: [\n        {\n          action: 'load_config',\n          config: {\n            base: 'review-workflow',\n            params: {\n              tier: 'axiom',\n              analyst_level: 'level3',\n              validator_count: 2,\n              max_iterations: 5,\n              max_tokens: 150000,\n              validator_level: 'level2',\n              artifact_scope: 'CHAIN',\n              content_domain: 'SENSITIVE',\n              has_test_content: false,\n              is_chain: true,\n              is_sensitive: true\n            }\n          }\n        },\n        {\n          action: 'publish',\n          topic: 'ISSUE_OPENED',\n          content: { text: taskText },\n          metadata: { _republished: true }\n        }\n      ]\n    }\n  }\n};"
+          }
+        },
+        "onError": {
+          "action": "publish_message",
+          "config": {
+            "topic": "CLUSTER_FAILED",
+            "content": {
+              "text": "Review router failed — could not load review workflow",
+              "data": { "reason": "router_error" }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

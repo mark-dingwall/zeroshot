@@ -1,0 +1,203 @@
+{
+  "name": "Design Review Conductor (Auto-Classify)",
+  "description": "Classifies design artifacts on ArtifactScope x ContentDomain, routes to review-workflow with appropriate tier. Junior level2 + senior level2 for UNCERTAIN escalation.",
+  "agents": [
+    {
+      "id": "junior-review-conductor",
+      "role": "conductor",
+      "modelLevel": "level2",
+      "useDirectApi": true,
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "artifactScope": {
+            "type": "string",
+            "enum": ["SINGLE", "CHAIN", "UNCERTAIN"],
+            "description": "SINGLE: one artifact type. CHAIN: multiple layers (requirements + AC + tests)."
+          },
+          "contentDomain": {
+            "type": "string",
+            "enum": ["GENERAL", "SENSITIVE", "UNCERTAIN"],
+            "description": "GENERAL: standard content. SENSITIVE: auth, payments, PII, infrastructure."
+          },
+          "artifactTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "requirements",
+                "acceptance_criteria",
+                "test_suite",
+                "implementation_plan",
+                "architecture_doc"
+              ]
+            },
+            "description": "Types of artifacts detected in the input"
+          },
+          "reasoning": {
+            "type": "string",
+            "description": "Why this classification (1-2 sentences)"
+          }
+        },
+        "required": ["artifactScope", "contentDomain", "artifactTypes", "reasoning"]
+      },
+      "prompt": {
+        "system": "You are the JUNIOR REVIEW CONDUCTOR - fast classification of design artifacts for review.\n\n## Your Job\nClassify the input on TWO dimensions to determine review intensity.\n\n## ARTIFACT SCOPE (pick ONE)\n- **SINGLE** - One type of artifact (just requirements, just a test plan, just an architecture doc)\n- **CHAIN** - Multiple artifact layers that should trace to each other (requirements + acceptance criteria, requirements + tests, full chain). CHAIN requires artifacts that form a TRACEABLE DEPENDENCY CHAIN (requirements → AC → tests). Multiple peer-level artifacts that don't reference each other are SINGLE.\n- **UNCERTAIN** - Escalate to senior conductor\n\n## CONTENT DOMAIN (pick ONE)\n- **GENERAL** - Standard business logic, UI, features, refactoring, documentation\n- **SENSITIVE** - Content involves: authentication/authorization, payment/billing, PII/personal data, infrastructure/deployment, security controls, compliance\n- **UNCERTAIN** - Escalate to senior conductor\n\n## ARTIFACT TYPES\nIdentify which artifact types are present:\n- requirements - Functional or non-functional requirements\n- acceptance_criteria - Testable acceptance criteria / user stories\n- test_suite - Test plans, test cases, test specifications\n- implementation_plan - Step-by-step implementation plans\n- architecture_doc - Architecture decisions, system design, API contracts\n\n## ROUTING (for context - you just classify, the hook routes)\n| Scope | Domain | Tier |\n|---|---|---|\n| SINGLE | GENERAL | Trace (quick scan) |\n| SINGLE | SENSITIVE | Vector (standard) |\n| CHAIN | GENERAL | Vector (standard) |\n| CHAIN | SENSITIVE | Axiom (maximum) |\n\n## Examples\n\nInput: \"Review these requirements for the user profile page\"\n```json\n{\"artifactScope\": \"SINGLE\", \"contentDomain\": \"GENERAL\", \"artifactTypes\": [\"requirements\"], \"reasoning\": \"Single requirements doc for standard UI feature\"}\n```\n\nInput: \"Review requirements + acceptance criteria + test plan for the payment processing module\"\n```json\n{\"artifactScope\": \"CHAIN\", \"contentDomain\": \"SENSITIVE\", \"artifactTypes\": [\"requirements\", \"acceptance_criteria\", \"test_suite\"], \"reasoning\": \"Multi-layer chain for payment processing (sensitive domain)\"}\n```\n\nInput: \"Review this architecture doc for the new caching layer\"\n```json\n{\"artifactScope\": \"SINGLE\", \"contentDomain\": \"GENERAL\", \"artifactTypes\": [\"architecture_doc\"], \"reasoning\": \"Single architecture doc for infrastructure component\"}\n```\n\n## Rules\n1. Output ONLY valid JSON\n2. If unsure about EITHER dimension, set that dimension to UNCERTAIN\n3. artifactTypes array must have at least 1 entry\n\nTask: {{ISSUE_OPENED.content.text}}"
+      },
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [
+        {
+          "topic": "ISSUE_OPENED",
+          "logic": {
+            "engine": "javascript",
+            "script": "return message.sender === 'system' && !message.metadata?._republished;"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "transform": {
+            "engine": "javascript",
+            "script": "const { artifactScope, contentDomain, artifactTypes, reasoning } = result;\nconst taskText = triggeringMessage.content?.text || '';\nif (!taskText || !taskText.trim()) throw new Error('ISSUE_OPENED has no text content — nothing to review');\n\nif (artifactScope === 'UNCERTAIN' || contentDomain === 'UNCERTAIN') {\n  return {\n    topic: 'CONDUCTOR_ESCALATE',\n    content: {\n      text: reasoning,\n      data: { artifactScope, contentDomain, artifactTypes, reasoning, taskText }\n    }\n  };\n}\n\nconst getTier = () => {\n  if (artifactScope === 'CHAIN' && contentDomain === 'SENSITIVE') return 'axiom';\n  if (artifactScope === 'CHAIN' || contentDomain === 'SENSITIVE') return 'vector';\n  return 'trace';\n};\n\nconst tier = getTier();\nconst tierParams = {\n  trace:  { analyst_level: 'level2', validator_count: 1, max_iterations: 3, max_tokens: 100000 },\n  vector: { analyst_level: 'level2', validator_count: 2, max_iterations: 4, max_tokens: 150000 },\n  axiom:  { analyst_level: 'level3', validator_count: 2, max_iterations: 5, max_tokens: 150000 }\n};\n\nconst has_test_content = artifactTypes.includes('test_suite') || artifactTypes.includes('acceptance_criteria');\nconst is_sensitive = contentDomain === 'SENSITIVE';\nconst is_chain = artifactScope === 'CHAIN';\n\nconst config = {\n  base: 'review-workflow',\n  params: {\n    tier,\n    ...tierParams[tier],\n    artifact_scope: artifactScope,\n    content_domain: contentDomain,\n    has_test_content,\n    is_chain,\n    is_sensitive\n  }\n};\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: `[REVIEW:${tier.toUpperCase()}] ${reasoning}`,\n    data: {\n      operations: [\n        { action: 'load_config', config },\n        { action: 'publish', topic: 'ISSUE_OPENED', content: { text: taskText }, metadata: { _republished: true } }\n      ]\n    }\n  }\n};"
+          }
+        },
+        "onError": {
+          "action": "publish_message",
+          "config": {
+            "topic": "CONDUCTOR_ESCALATE",
+            "content": {
+              "text": "Junior conductor failed — escalating to senior",
+              "data": { "taskText": "" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "senior-review-conductor",
+      "role": "conductor",
+      "modelLevel": "level2",
+      "useDirectApi": true,
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "artifactScope": {
+            "type": "string",
+            "enum": ["SINGLE", "CHAIN"],
+            "description": "No UNCERTAIN - must decide"
+          },
+          "contentDomain": {
+            "type": "string",
+            "enum": ["GENERAL", "SENSITIVE"],
+            "description": "No UNCERTAIN - must decide"
+          },
+          "artifactTypes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "requirements",
+                "acceptance_criteria",
+                "test_suite",
+                "implementation_plan",
+                "architecture_doc"
+              ]
+            }
+          },
+          "reasoning": {
+            "type": "string",
+            "description": "Detailed explanation"
+          }
+        },
+        "required": ["artifactScope", "contentDomain", "artifactTypes", "reasoning"]
+      },
+      "prompt": {
+        "system": "You are the SENIOR REVIEW CONDUCTOR. You may be called because the junior was uncertain, or because a previous classification attempt failed validation (CLUSTER_OPERATIONS_VALIDATION_FAILED). In either case, make a definitive classification.\n\n## ARTIFACT SCOPE (pick ONE - no UNCERTAIN)\n- **SINGLE** - One type of artifact\n- **CHAIN** - Multiple artifact layers that should trace to each other\n\n**Bias for scope: If unsure, choose SINGLE.** CHAIN triggers more expensive review.\n\n## CONTENT DOMAIN (pick ONE - no UNCERTAIN)\n- **GENERAL** - Standard content\n- **SENSITIVE** - Auth, payments, PII, infrastructure, security, compliance\n\n**Bias for domain: If unsure, choose SENSITIVE.** Missing security review is worse than an unnecessary one.\n\n## ARTIFACT TYPES\nIdentify: requirements, acceptance_criteria, test_suite, implementation_plan, architecture_doc\n\n## Rules\n1. Output ONLY valid JSON\n2. YOU MUST DECIDE - no UNCERTAIN allowed\n3. When unsure: SINGLE + SENSITIVE (safe default)\n\nWhen triggered by CLUSTER_OPERATIONS_VALIDATION_FAILED: read the error details from context. The validation errors describe what was wrong with the previous classification's resulting config. Adjust your classification to avoid the reported structural issues.\n\nJunior was uncertain. Original task follows."
+      },
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "CONDUCTOR_ESCALATE",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "CLUSTER_OPERATIONS_VALIDATION_FAILED",
+            "priority": "high",
+            "since": "cluster_start",
+            "strategy": "latest",
+            "amount": 3
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "maxRetries": 3,
+      "triggers": [
+        { "topic": "CONDUCTOR_ESCALATE", "action": "execute_task" },
+        {
+          "topic": "CLUSTER_OPERATIONS_VALIDATION_FAILED",
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "transform": {
+            "engine": "javascript",
+            "script": "const { artifactScope, contentDomain, artifactTypes, reasoning } = result;\n\nlet taskText = triggeringMessage.content?.data?.taskText || '';\nif (!taskText) {\n  taskText = triggeringMessage.content?.text || '';\n}\nif (!taskText) {\n  const publishOp = triggeringMessage.content?.data?.operations?.find(op => op.action === 'publish');\n  taskText = publishOp?.content?.text || '';\n}\n\nconst getTier = () => {\n  if (artifactScope === 'CHAIN' && contentDomain === 'SENSITIVE') return 'axiom';\n  if (artifactScope === 'CHAIN' || contentDomain === 'SENSITIVE') return 'vector';\n  return 'trace';\n};\n\nconst tier = getTier();\nconst tierParams = {\n  trace:  { analyst_level: 'level2', validator_count: 1, max_iterations: 3, max_tokens: 100000 },\n  vector: { analyst_level: 'level2', validator_count: 2, max_iterations: 4, max_tokens: 150000 },\n  axiom:  { analyst_level: 'level3', validator_count: 2, max_iterations: 5, max_tokens: 150000 }\n};\n\nconst has_test_content = artifactTypes.includes('test_suite') || artifactTypes.includes('acceptance_criteria');\nconst is_sensitive = contentDomain === 'SENSITIVE';\nconst is_chain = artifactScope === 'CHAIN';\n\nconst config = {\n  base: 'review-workflow',\n  params: {\n    tier,\n    ...tierParams[tier],\n    artifact_scope: artifactScope,\n    content_domain: contentDomain,\n    has_test_content,\n    is_chain,\n    is_sensitive\n  }\n};\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: `Senior: [REVIEW:${tier.toUpperCase()}] ${reasoning}`,\n    data: {\n      operations: [\n        { action: 'load_config', config },\n        { action: 'publish', topic: 'ISSUE_OPENED', content: { text: taskText }, metadata: { _republished: true } }\n      ]\n    }\n  }\n};"
+          }
+        },
+        "onError": {
+          "action": "publish_message",
+          "config": {
+            "topic": "CLUSTER_OPERATIONS",
+            "content": {
+              "text": "[REVIEW:TRACE] Senior conductor failed — falling back to trace tier",
+              "data": {
+                "operations": [
+                  {
+                    "action": "load_config",
+                    "config": {
+                      "base": "review-workflow",
+                      "params": {
+                        "tier": "trace",
+                        "analyst_level": "level2",
+                        "validator_level": "level2",
+                        "validator_count": 1,
+                        "max_iterations": 3,
+                        "max_tokens": 100000,
+                        "has_test_content": false,
+                        "is_chain": false,
+                        "is_sensitive": false
+                      }
+                    }
+                  },
+                  {
+                    "action": "publish",
+                    "topic": "ISSUE_OPENED",
+                    "content": { "text": "" },
+                    "metadata": { "_republished": true }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
