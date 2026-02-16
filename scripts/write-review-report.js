@@ -109,7 +109,7 @@ function buildReport(content) {
   const summary = finalReport.executiveSummary || content.text || '';
 
   const sections = [
-    '# Design Review Report\n',
+    (process.env.REPORT_TITLE || '# Design Review Report') + '\n',
     `**Assessment:** ${assessment} | **Iterations:** ${iterations} | **Termination:** ${termination}`,
     `**Cluster:** ${clusterId} | **Date:** ${date}\n`,
   ];
