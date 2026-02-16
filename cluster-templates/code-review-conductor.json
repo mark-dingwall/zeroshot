@@ -1,0 +1,213 @@
+{
+  "name": "Code Review Conductor (Auto-Classify)",
+  "description": "Classifies code changes on ChangeScope x RiskDomain, routes to code-review-workflow with appropriate tier. Junior level2 + senior level2 for UNCERTAIN escalation.",
+  "agents": [
+    {
+      "id": "junior-review-conductor",
+      "role": "conductor",
+      "modelLevel": "level2",
+      "useDirectApi": true,
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "changeScope": {
+            "type": "string",
+            "enum": ["PATCH", "MODULE", "CROSS_CUTTING", "UNCERTAIN"],
+            "description": "PATCH: few lines/single file. MODULE: multi-file within one concern. CROSS_CUTTING: spans multiple modules."
+          },
+          "riskDomain": {
+            "type": "string",
+            "enum": ["GENERAL", "SENSITIVE", "UNCERTAIN"],
+            "description": "GENERAL: standard code. SENSITIVE: auth, payments, PII, security, crypto."
+          },
+          "has_security_surface": {
+            "type": "boolean",
+            "description": "True if changed files touch auth/, security/, crypto/, or contain password/token/secret patterns"
+          },
+          "has_test_changes": {
+            "type": "boolean",
+            "description": "True if changes include *.test.*, *.spec.*, or tests/ files"
+          },
+          "has_api_changes": {
+            "type": "boolean",
+            "description": "True if changes touch API routes, exported interfaces, or public function signatures"
+          },
+          "reasoning": {
+            "type": "string",
+            "description": "Why this classification (1-2 sentences)"
+          }
+        },
+        "required": [
+          "changeScope",
+          "riskDomain",
+          "has_security_surface",
+          "has_test_changes",
+          "has_api_changes",
+          "reasoning"
+        ]
+      },
+      "prompt": {
+        "system": "You are the JUNIOR CODE REVIEW CONDUCTOR — fast classification of code changes for review.\n\n## Your Job\nClassify the input on TWO dimensions to determine review intensity, and detect boolean flags from file paths.\n\n## CHANGE SCOPE (pick ONE)\n- **PATCH** — Few lines changed, single file or tightly coupled files\n- **MODULE** — Multi-file changes within one concern/module\n- **CROSS_CUTTING** — Changes span multiple modules/concerns\n- **UNCERTAIN** — Escalate to senior conductor\n\n## RISK DOMAIN (pick ONE)\n- **GENERAL** — Standard business logic, UI, features, refactoring, documentation\n- **SENSITIVE** — Content involves: authentication/authorization, payment/billing, PII/personal data, cryptography, security controls, compliance\n- **UNCERTAIN** — Escalate to senior conductor\n\n## BOOLEAN FLAG DETECTION\nAuto-detect from file paths and content:\n- **has_security_surface**: true if files touch auth/, security/, crypto/, or contain password/token/secret patterns\n- **has_test_changes**: true if changes include *.test.*, *.spec.*, tests/ files\n- **has_api_changes**: true if changes touch API routes, exported interfaces, public function signatures\n\n## ROUTING (for context — you just classify, the hook routes)\n| Scope | Domain | Tier |\n|---|---|---|\n| PATCH | GENERAL | Bell (quick) |\n| PATCH | SENSITIVE | Book (standard) |\n| MODULE | GENERAL | Book (standard) |\n| MODULE | SENSITIVE | Candle (maximum) |\n| CROSS_CUTTING | any | Candle (maximum) |\n\n## Examples\n\nInput: \"review my changes\" (with a small diff touching one file)\n```json\n{\"changeScope\": \"PATCH\", \"riskDomain\": \"GENERAL\", \"has_security_surface\": false, \"has_test_changes\": false, \"has_api_changes\": false, \"reasoning\": \"Small single-file change to standard logic\"}\n```\n\nInput: \"review changes to auth module\" (touching auth/, tests/)\n```json\n{\"changeScope\": \"MODULE\", \"riskDomain\": \"SENSITIVE\", \"has_security_surface\": true, \"has_test_changes\": true, \"has_api_changes\": false, \"reasoning\": \"Multi-file auth changes with test updates\"}\n```\n\n## Rules\n1. Output ONLY valid JSON\n2. If unsure about EITHER dimension, set that dimension to UNCERTAIN\n3. Boolean flags should default to false when you cannot determine from the input\n\nTask: {{ISSUE_OPENED.content.text}}"
+      },
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "triggers": [
+        {
+          "topic": "ISSUE_OPENED",
+          "logic": {
+            "engine": "javascript",
+            "script": "return message.sender === 'system' && !message.metadata?._republished;"
+          },
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "transform": {
+            "engine": "javascript",
+            "script": "const { changeScope, riskDomain, has_security_surface, has_test_changes, has_api_changes, reasoning } = result;\nconst taskText = triggeringMessage.content?.text || '';\nif (!taskText || !taskText.trim()) throw new Error('ISSUE_OPENED has no text content — nothing to review');\n\nif (changeScope === 'UNCERTAIN' || riskDomain === 'UNCERTAIN') {\n  return {\n    topic: 'CONDUCTOR_ESCALATE',\n    content: {\n      text: reasoning,\n      data: { changeScope, riskDomain, has_security_surface, has_test_changes, has_api_changes, reasoning, taskText }\n    }\n  };\n}\n\nconst getTier = () => {\n  if (changeScope === 'CROSS_CUTTING') return 'candle';\n  if (changeScope === 'MODULE' && riskDomain === 'SENSITIVE') return 'candle';\n  if (changeScope === 'MODULE' || riskDomain === 'SENSITIVE') return 'book';\n  return 'bell';\n};\n\nconst tier = getTier();\nconst tierParams = {\n  bell:   { analyst_level: 'level2', validator_count: 1, max_iterations: 3, max_tokens: 100000 },\n  book:   { analyst_level: 'level2', validator_count: 2, max_iterations: 4, max_tokens: 150000 },\n  candle: { analyst_level: 'level3', validator_count: 2, max_iterations: 5, max_tokens: 150000 }\n};\n\nconst config = {\n  base: 'code-review-workflow',\n  params: {\n    tier,\n    ...tierParams[tier],\n    validator_level: 'level2',\n    change_scope: changeScope,\n    risk_domain: riskDomain,\n    has_security_surface: !!has_security_surface,\n    has_test_changes: !!has_test_changes,\n    has_api_changes: !!has_api_changes\n  }\n};\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: `[CODE-REVIEW:${tier.toUpperCase()}] ${reasoning}`,\n    data: {\n      operations: [\n        { action: 'load_config', config },\n        { action: 'publish', topic: 'ISSUE_OPENED', content: { text: taskText }, metadata: { _republished: true } }\n      ]\n    }\n  }\n};"
+          }
+        },
+        "onError": {
+          "action": "publish_message",
+          "config": {
+            "topic": "CONDUCTOR_ESCALATE",
+            "content": {
+              "text": "Junior conductor failed — escalating to senior",
+              "data": { "taskText": "" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "senior-review-conductor",
+      "role": "conductor",
+      "modelLevel": "level2",
+      "useDirectApi": true,
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "changeScope": {
+            "type": "string",
+            "enum": ["PATCH", "MODULE", "CROSS_CUTTING"],
+            "description": "No UNCERTAIN - must decide"
+          },
+          "riskDomain": {
+            "type": "string",
+            "enum": ["GENERAL", "SENSITIVE"],
+            "description": "No UNCERTAIN - must decide"
+          },
+          "has_security_surface": {
+            "type": "boolean"
+          },
+          "has_test_changes": {
+            "type": "boolean"
+          },
+          "has_api_changes": {
+            "type": "boolean"
+          },
+          "reasoning": {
+            "type": "string",
+            "description": "Detailed explanation"
+          }
+        },
+        "required": [
+          "changeScope",
+          "riskDomain",
+          "has_security_surface",
+          "has_test_changes",
+          "has_api_changes",
+          "reasoning"
+        ]
+      },
+      "prompt": {
+        "system": "You are the SENIOR CODE REVIEW CONDUCTOR. You may be called because the junior was uncertain, or because a previous classification attempt failed validation (CLUSTER_OPERATIONS_VALIDATION_FAILED). In either case, make a definitive classification.\n\n## CHANGE SCOPE (pick ONE — no UNCERTAIN)\n- **PATCH** — Few lines, single file or tightly coupled files\n- **MODULE** — Multi-file within one concern\n- **CROSS_CUTTING** — Spans multiple modules/concerns\n\n**Bias for scope: If unsure, choose PATCH.** Higher scopes trigger more expensive review.\n\n## RISK DOMAIN (pick ONE — no UNCERTAIN)\n- **GENERAL** — Standard content\n- **SENSITIVE** — Auth, payments, PII, crypto, security, compliance\n\n**Bias for domain: If unsure, choose SENSITIVE.** Missing security review is worse than an unnecessary one.\n\n## BOOLEAN FLAGS\n- **has_security_surface**: true if files touch auth/, security/, crypto/, password/token/secret\n- **has_test_changes**: true if *.test.*, *.spec.*, tests/ files\n- **has_api_changes**: true if API routes, exported interfaces, public functions\n\n## Rules\n1. Output ONLY valid JSON\n2. YOU MUST DECIDE — no UNCERTAIN allowed\n3. When unsure: PATCH + SENSITIVE (safe default)\n4. Boolean flags default to false when indeterminate\n\nWhen triggered by CLUSTER_OPERATIONS_VALIDATION_FAILED: read the error details from context. Adjust your classification to avoid the reported structural issues.\n\nJunior was uncertain. Original task follows."
+      },
+      "contextStrategy": {
+        "sources": [
+          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "CONDUCTOR_ESCALATE",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "CLUSTER_OPERATIONS_VALIDATION_FAILED",
+            "priority": "high",
+            "since": "cluster_start",
+            "strategy": "latest",
+            "amount": 3
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": 100000
+      },
+      "maxRetries": 3,
+      "triggers": [
+        { "topic": "CONDUCTOR_ESCALATE", "action": "execute_task" },
+        {
+          "topic": "CLUSTER_OPERATIONS_VALIDATION_FAILED",
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "transform": {
+            "engine": "javascript",
+            "script": "const { changeScope, riskDomain, has_security_surface, has_test_changes, has_api_changes, reasoning } = result;\n\nlet taskText = triggeringMessage.content?.data?.taskText || '';\nif (!taskText) {\n  taskText = triggeringMessage.content?.text || '';\n}\nif (!taskText) {\n  const publishOp = triggeringMessage.content?.data?.operations?.find(op => op.action === 'publish');\n  taskText = publishOp?.content?.text || '';\n}\n\nconst getTier = () => {\n  if (changeScope === 'CROSS_CUTTING') return 'candle';\n  if (changeScope === 'MODULE' && riskDomain === 'SENSITIVE') return 'candle';\n  if (changeScope === 'MODULE' || riskDomain === 'SENSITIVE') return 'book';\n  return 'bell';\n};\n\nconst tier = getTier();\nconst tierParams = {\n  bell:   { analyst_level: 'level2', validator_count: 1, max_iterations: 3, max_tokens: 100000 },\n  book:   { analyst_level: 'level2', validator_count: 2, max_iterations: 4, max_tokens: 150000 },\n  candle: { analyst_level: 'level3', validator_count: 2, max_iterations: 5, max_tokens: 150000 }\n};\n\nconst config = {\n  base: 'code-review-workflow',\n  params: {\n    tier,\n    ...tierParams[tier],\n    validator_level: 'level2',\n    change_scope: changeScope,\n    risk_domain: riskDomain,\n    has_security_surface: !!has_security_surface,\n    has_test_changes: !!has_test_changes,\n    has_api_changes: !!has_api_changes\n  }\n};\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: `Senior: [CODE-REVIEW:${tier.toUpperCase()}] ${reasoning}`,\n    data: {\n      operations: [\n        { action: 'load_config', config },\n        { action: 'publish', topic: 'ISSUE_OPENED', content: { text: taskText }, metadata: { _republished: true } }\n      ]\n    }\n  }\n};"
+          }
+        },
+        "onError": {
+          "action": "publish_message",
+          "config": {
+            "topic": "CLUSTER_OPERATIONS",
+            "content": {
+              "text": "[CODE-REVIEW:BOOK] Senior conductor failed — falling back to book tier",
+              "data": {
+                "operations": [
+                  {
+                    "action": "load_config",
+                    "config": {
+                      "base": "code-review-workflow",
+                      "params": {
+                        "tier": "book",
+                        "analyst_level": "level2",
+                        "validator_level": "level2",
+                        "validator_count": 2,
+                        "max_iterations": 4,
+                        "max_tokens": 150000,
+                        "change_scope": "PATCH",
+                        "risk_domain": "SENSITIVE",
+                        "has_security_surface": false,
+                        "has_test_changes": false,
+                        "has_api_changes": false
+                      }
+                    }
+                  },
+                  {
+                    "action": "publish",
+                    "topic": "ISSUE_OPENED",
+                    "content": { "text": "" },
+                    "metadata": { "_republished": true }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
