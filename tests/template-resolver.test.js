@@ -165,7 +165,7 @@ describe('TemplateResolver', function () {
     });
 
     it('should preserve boolean types for single-placeholder values', function () {
-      const resolved = resolver.resolve('review-workflow', {
+      const resolved = resolver.resolve('docs-review-workflow', {
         tier: 'vector',
         analyst_level: 'level2',
         validator_level: 'level2',

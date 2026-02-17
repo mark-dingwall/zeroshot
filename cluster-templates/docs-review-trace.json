@@ -1,6 +1,6 @@
 {
-  "name": "Design Review (Vector)",
-  "description": "Standard design review. Core + conditional perspectives, 2-3 validators (varies by content flags), 4 max iterations.",
+  "name": "Design Review (Trace)",
+  "description": "Quick design review. 2 core perspectives, 1 validator, 3 max iterations.",
   "agents": [
     {
       "id": "review-router",
@@ -43,7 +43,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const taskText = triggeringMessage.content?.text || '';\nif (!taskText || !taskText.trim()) throw new Error('ISSUE_OPENED has no text content — nothing to review');\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: '[REVIEW:VECTOR] Pass-through routing to vector tier',\n    data: {\n      operations: [\n        {\n          action: 'load_config',\n          config: {\n            base: 'review-workflow',\n            params: {\n              tier: 'vector',\n              analyst_level: 'level2',\n              validator_count: 2,\n              max_iterations: 4,\n              max_tokens: 150000,\n              validator_level: 'level2',\n              artifact_scope: 'CHAIN',\n              content_domain: 'GENERAL',\n              has_test_content: false,\n              is_chain: true,\n              is_sensitive: false\n            }\n          }\n        },\n        {\n          action: 'publish',\n          topic: 'ISSUE_OPENED',\n          content: { text: taskText },\n          metadata: { _republished: true }\n        }\n      ]\n    }\n  }\n};"
+            "script": "const taskText = triggeringMessage.content?.text || '';\nif (!taskText || !taskText.trim()) throw new Error('ISSUE_OPENED has no text content — nothing to review');\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: '[REVIEW:TRACE] Pass-through routing to trace tier',\n    data: {\n      operations: [\n        {\n          action: 'load_config',\n          config: {\n            base: 'docs-review-workflow',\n            params: {\n              tier: 'trace',\n              analyst_level: 'level2',\n              validator_count: 1,\n              max_iterations: 3,\n              max_tokens: 100000,\n              validator_level: 'level2',\n              artifact_scope: 'SINGLE',\n              content_domain: 'GENERAL',\n              has_test_content: false,\n              is_chain: false,\n              is_sensitive: false\n            }\n          }\n        },\n        {\n          action: 'publish',\n          topic: 'ISSUE_OPENED',\n          content: { text: taskText },\n          metadata: { _republished: true }\n        }\n      ]\n    }\n  }\n};"
           }
         },
         "onError": {
