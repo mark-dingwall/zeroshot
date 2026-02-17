@@ -51,6 +51,11 @@
       "type": "boolean",
       "default": false,
       "description": "True when changes touch API routes, exported interfaces, or public function signatures"
+    },
+    "quality_gate": {
+      "type": "boolean",
+      "default": true,
+      "description": "Run automated quality checks (tests/lint) before analysis"
     }
   },
   "agents": [
@@ -221,6 +226,14 @@
       "triggers": [
         {
           "topic": "ISSUE_OPENED",
+          "logic": {
+            "engine": "javascript",
+            "script": "const qg = cluster.getAgents().find(a => a.role === 'quality-gate'); return !qg;"
+          },
+          "action": "execute_task"
+        },
+        {
+          "topic": "QUALITY_GATE_PASSED",
           "action": "execute_task"
         },
         {
@@ -340,7 +353,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const reviews = result.findingReviews || []; const approved = reviews.length > 0 && reviews.every(r => r.verdict === 'ACCEPT'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, findingReviews: reviews } } };"
+            "script": "const reviews = result.findingReviews || []; const approved = reviews.every(r => r.verdict === 'ACCEPT'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, findingReviews: reviews } } };"
           }
         },
         "onError": {
@@ -433,7 +446,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const reviews = result.findingReviews || []; const approved = reviews.length > 0 && reviews.every(r => r.verdict === 'ACCEPT'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, findingReviews: reviews } } };"
+            "script": "const reviews = result.findingReviews || []; const approved = reviews.every(r => r.verdict === 'ACCEPT'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, findingReviews: reviews } } };"
           }
         },
         "onError": {
@@ -596,6 +609,38 @@
           }
         }
       }
+    },
+    {
+      "id": "quality-gate",
+      "role": "quality-gate",
+      "condition": "{{quality_gate}} == true",
+      "triggers": [
+        {
+          "topic": "ISSUE_OPENED",
+          "action": "execute_system_command",
+          "config": {
+            "command": "node $ZEROSHOT_ROOT/scripts/quality-gate-runner.js",
+            "timeout": 120000,
+            "onSuccess": { "topic": "QUALITY_GATE_PASSED" },
+            "onFailure": { "topic": "QUALITY_GATE_FAILED" }
+          }
+        }
+      ]
+    },
+    {
+      "id": "quality-gate-stopper",
+      "role": "orchestrator",
+      "condition": "{{quality_gate}} == true",
+      "triggers": [
+        {
+          "topic": "QUALITY_GATE_FAILED",
+          "action": "execute_system_command",
+          "config": {
+            "command": "echo 'Quality gate failed - tests/lint did not pass. Review aborted.' >&2; exit 1",
+            "timeout": 5000
+          }
+        }
+      ]
     },
     {
       "id": "completion-detector",

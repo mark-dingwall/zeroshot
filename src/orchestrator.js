@@ -288,6 +288,7 @@ class Orchestrator {
       agents,
       isolation,
       autoPr: clusterData.autoPr || false,
+      paramOverrides: clusterData.paramOverrides || null,
     };
 
     this.clusters.set(clusterId, cluster);
@@ -515,6 +516,8 @@ class Orchestrator {
           autoPr: cluster.autoPr || false,
           // Persist model override for consistent agent spawning on resume
           modelOverride: cluster.modelOverride || null,
+          // Persist param overrides so resumed clusters apply same template params
+          paramOverrides: cluster.paramOverrides || null,
           // Persist isolation info (excluding manager instance which can't be serialized)
           // CRITICAL: workDir is required for resume() to recreate container with same workspace
           isolation: cluster.isolation
@@ -629,7 +632,7 @@ class Orchestrator {
    * @param {MockAgentExecutor} mockExecutor - Mock executor with agent behaviors
    * @returns {Object} Cluster object
    */
-  startWithMock(config, input, mockExecutor) {
+  startWithMock(config, input, mockExecutor, options = {}) {
     if (!mockExecutor) {
       throw new Error('Orchestrator.startWithMock: mockExecutor is required');
     }
@@ -656,6 +659,7 @@ class Orchestrator {
     return this._startInternal(config, input, {
       mockExecutor,
       testMode: true,
+      paramOverrides: options.paramOverrides || null,
     });
   }
 
@@ -681,6 +685,7 @@ class Orchestrator {
       clusterId: options.clusterId, // Explicit ID from CLI/daemon parent
       settings: options.settings, // User settings for issue provider detection
       forceProvider: options.forceProvider, // Force specific issue provider
+      paramOverrides: options.paramOverrides || null, // Template param overrides (e.g., skip quality gate)
     });
   }
 
@@ -735,6 +740,8 @@ class Orchestrator {
       autoPr: options.autoPr || false,
       // Model override for all agents (applied to dynamically added agents)
       modelOverride: options.modelOverride || null,
+      // Template param overrides (e.g., --skip-quality-gate → { quality_gate: false })
+      paramOverrides: options.paramOverrides || null,
       // Issue provider tracking (where issue was fetched from)
       issueProvider: null, // Set after fetching issue (github, gitlab, jira, azure-devops)
       // Git platform tracking (where PR/MR will be created - independent of issue provider)
@@ -2376,11 +2383,15 @@ Continue from where you left off. Review your previous output to understand what
     if (typeof config === 'object' && config.base) {
       // Parameterized template - resolve with TemplateResolver
       const { base, params } = config;
+      // Apply param overrides from CLI flags (e.g., --skip-quality-gate → quality_gate: false)
+      const mergedParams = cluster.paramOverrides
+        ? { ...params, ...cluster.paramOverrides }
+        : params;
       this._log(`    Loading parameterized template: ${base}`);
-      this._log(`    Params: ${JSON.stringify(params)}`);
+      this._log(`    Params: ${JSON.stringify(mergedParams)}`);
 
       const resolver = new TemplateResolver(templatesDir);
-      loadedConfig = resolver.resolve(base, params);
+      loadedConfig = resolver.resolve(base, mergedParams);
 
       this._log(`    ✓ Resolved template: ${base} → ${loadedConfig.agents?.length || 0} agent(s)`);
     } else if (typeof config === 'string') {
