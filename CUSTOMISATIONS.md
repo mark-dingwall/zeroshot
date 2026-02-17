@@ -8,34 +8,28 @@ Three multi-agent systems sharing a common architecture: **design reviews** (tra
 
 ### Architecture (shared)
 
-Design and code reviews follow the same five-stage pipeline. Document generation uses a six-stage variant with key differences (see below).
-
-1. **Router** — pass-through (fixed tier) or conductor classification
-2. **Analysts** — perspective-specific subagents spawned in parallel via Task tool
-3. **Validators** — adversarial challenge/defend iterations with analysts
-4. **Synthesiser** — compiles confirmed/contested/withdrawn findings into final report
-5. **Report writer** — `execute_system_command` writes markdown to CWD (`REPORT_TITLE` env var overrides heading)
+All three systems follow a common pipeline: router → analysts (parallel subagents via Task tool) → adversarial validators → synthesiser → report writer (`execute_system_command` writes markdown to CWD, `REPORT_TITLE` env var overrides heading). Document generation adds a revision-preparer stage (see below).
 
 Fixed-tier routers use hardcoded boolean params to activate conditional perspectives. Auto-classifying conductors derive the tier from the input.
 
 ### Design Reviews (trace / vector / axiom)
 
-| Tier   | Config          | Analysts                 | Validators | Max Iters | Analyst Level | Max Tokens | Use Case         |
-| ------ | --------------- | ------------------------ | ---------- | --------- | ------------- | ---------- | ---------------- |
-| Trace  | `review-trace`  | 2 core                   | 1          | 3         | level2        | 100k       | Quick scan       |
-| Vector | `review-vector` | 3-4 (core + conditional) | 2-3        | 4         | level2        | 150k       | Standard review  |
-| Axiom  | `review-axiom`  | 5-8 (all perspectives)   | 2-3        | 5         | level3        | 150k       | Maximum scrutiny |
+| Tier   | Config               | Analysts                 | Validators | Max Iters | Analyst Level | Max Tokens |
+| ------ | -------------------- | ------------------------ | ---------- | --------- | ------------- | ---------- |
+| Trace  | `docs-review-trace`  | 2 core                   | 1          | 3         | level2        | 100k       |
+| Vector | `docs-review-vector` | 3-4 (core + conditional) | 2-3        | 4         | level2        | 150k       |
+| Axiom  | `docs-review-axiom`  | 5-8 (all perspectives)   | 2-3        | 5         | level3        | 150k       |
 
-Boolean flags (`has_test_content`, `is_chain`, `is_sensitive`) activate conditional perspectives. Content-aware activation requires `review-conductor`.
+Boolean flags (`has_test_content`, `is_chain`, `is_sensitive`) activate conditional perspectives. Content-aware activation requires `docs-review-conductor`.
 
 ```bash
 # Fixed tier
-zeroshot run "Review these requirements" --config review-trace
-zeroshot run requirements.md --config review-vector
-zeroshot run "Review auth design + AC + tests" --config review-axiom
+zeroshot run "Review these requirements" --config docs-review-trace
+zeroshot run requirements.md --config docs-review-vector
+zeroshot run "Review auth design + AC + tests" --config docs-review-axiom
 
 # Auto-classify tier (conductor picks trace/vector/axiom)
-zeroshot run "Review this" --config review-conductor
+zeroshot run "Review this" --config docs-review-conductor
 ```
 
 Or via the `zs` shell alias (defined in `~/.bash_aliases`):
@@ -48,18 +42,18 @@ zs axiom "Review auth design + AC + tests"
 
 #### Files
 
-| File                                                    | Purpose                                                                  |
-| ------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `cluster-templates/review-trace.json`                   | Fixed trace-tier router config                                           |
-| `cluster-templates/review-vector.json`                  | Fixed vector-tier router config                                          |
-| `cluster-templates/review-axiom.json`                   | Fixed axiom-tier router config                                           |
-| `cluster-templates/review-conductor.json`               | Auto-classifying conductor config                                        |
-| `cluster-templates/base-templates/review-workflow.json` | Parameterised base template (analysts, synthesiser, validator, reporter) |
-| `scripts/write-review-report.js`                        | Formats SYNTHESIS_COMPLETE data as markdown report                       |
+| File                                                         | Purpose                                                                  |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| `cluster-templates/docs-review-trace.json`                   | Fixed trace-tier router config                                           |
+| `cluster-templates/docs-review-vector.json`                  | Fixed vector-tier router config                                          |
+| `cluster-templates/docs-review-axiom.json`                   | Fixed axiom-tier router config                                           |
+| `cluster-templates/docs-review-conductor.json`               | Auto-classifying conductor config                                        |
+| `cluster-templates/base-templates/docs-review-workflow.json` | Parameterised base template (analysts, synthesiser, validator, reporter) |
+| `scripts/write-review-report.js`                             | Formats SYNTHESIS_COMPLETE data as markdown report                       |
 
 ### Code Reviews (bell / book / candle)
 
-The conductor classifies on two dimensions — **ChangeScope** x **RiskDomain** — to pick a tier:
+The conductor classifies on **ChangeScope** x **RiskDomain** to pick a tier:
 
 | ChangeScope   | RiskDomain | Tier   |
 | ------------- | ---------- | ------ |
@@ -69,24 +63,15 @@ The conductor classifies on two dimensions — **ChangeScope** x **RiskDomain** 
 | MODULE        | SENSITIVE  | Candle |
 | CROSS_CUTTING | any        | Candle |
 
-| Tier   | Config               | Perspectives           | Validators | Max Iters | Analyst Level | Max Tokens | Use Case         |
-| ------ | -------------------- | ---------------------- | ---------- | --------- | ------------- | ---------- | ---------------- |
-| Bell   | `code-review-bell`   | 2 core + mandatory     | 1          | 3         | level2        | 100k       | Quick scan       |
-| Book   | `code-review-book`   | core + all conditional | 2          | 4         | level2        | 150k       | Standard review  |
-| Candle | `code-review-candle` | all (core + extended)  | 2          | 5         | level3        | 150k       | Maximum scrutiny |
+| Tier   | Config               | Perspectives           | Validators | Max Iters | Analyst Level | Max Tokens |
+| ------ | -------------------- | ---------------------- | ---------- | --------- | ------------- | ---------- |
+| Bell   | `code-review-bell`   | 2 core + mandatory     | 1          | 3         | level2        | 100k       |
+| Book   | `code-review-book`   | core + all conditional | 2          | 4         | level2        | 150k       |
+| Candle | `code-review-candle` | all (core + extended)  | 2          | 5         | level3        | 150k       |
 
-**Perspectives:**
+**Perspectives:** Core (all tiers): Correctness Analyst, Error Handling Auditor. Conditional: Security Reviewer (`has_security_surface`), Test Coverage Analyst (`has_test_changes`), API/Interface Reviewer (`has_api_changes`). Extended (candle only): Performance, Architectural Coherence, Regression Risk.
 
-- **Core (all tiers):** Correctness Analyst, Error Handling Auditor
-- **Conditional (activated by boolean flags):** Security Reviewer (`has_security_surface`), Test Coverage Analyst (`has_test_changes`), API/Interface Reviewer (`has_api_changes`)
-- **Extended (candle only):** Performance Analyst, Architectural Coherence, Regression Risk Analyst
-
-**Validators** — two complementary roles (book/candle get both, bell gets evidence only):
-
-- **validator-evidence** — Fact-checker. Reads actual source via CLI tools to verify claims about code are factually correct.
-- **validator-rigor** — Reasoning quality. Evaluates severity calibration, logical soundness, and whether the argument holds. Assumes quoted code is accurate.
-
-Iteration is monotonic: no new findings after iteration 1. Rejected findings go back to the analyst for refinement or withdrawal.
+**Validators:** validator-evidence (fact-checker, CLI tools) + validator-rigor (reasoning quality, direct API). Bell gets evidence only; book/candle get both. Iteration is monotonic: no new findings after iteration 1.
 
 ```bash
 # Fixed tier
@@ -112,16 +97,15 @@ zeroshot run "review my changes" --config code-review-conductor
 
 Multi-perspective document drafting with iterative validator feedback. Generates checklists, guides, specifications, and plans.
 
-| Tier  | Config      | Perspectives | Validators | Max Iters | Drafter Level | Max Tokens | Use Case                |
-| ----- | ----------- | ------------ | ---------- | --------- | ------------- | ---------- | ----------------------- |
-| Facet | `doc-facet` | 2-3          | 1          | 3         | level2        | 100k       | Light doc generation    |
-| Lens  | `doc-lens`  | 3-5          | 2          | 4         | level2        | 150k       | Standard doc generation |
-| Prism | `doc-prism` | 5-8          | 3          | 5         | level3        | 150k       | Deep doc generation     |
+| Tier  | Config      | Perspectives | Validators | Max Iters | Drafter Level | Max Tokens |
+| ----- | ----------- | ------------ | ---------- | --------- | ------------- | ---------- |
+| Facet | `doc-facet` | 2-3          | 1          | 3         | level2        | 100k       |
+| Lens  | `doc-lens`  | 3-5          | 2          | 4         | level2        | 150k       |
+| Prism | `doc-prism` | 5-8          | 3          | 5         | level3        | 150k       |
 
 All three configs are fixed-tier (no auto-classifying conductor yet).
 
 ```bash
-# Fixed tier
 zeroshot run "Draft a migration checklist" --config doc-facet
 zeroshot run "Write a deployment guide" --config doc-lens
 zeroshot run "Produce a full API specification" --config doc-prism
@@ -129,28 +113,25 @@ zeroshot run "Produce a full API specification" --config doc-prism
 
 #### Six-Stage Pipeline
 
-1. **Router** — pass-through that loads the `doc-draft-workflow` base template with tier-specific params. Guards against `_republished` to prevent infinite loops. Republishes ISSUE_OPENED text to trigger the drafter.
-2. **Drafter** — reads the brief, selects perspectives from a domain-specific menu, spawns ALL perspective subagents in parallel via Task tool. On iteration 1 returns the full `document`; on iteration 2+ returns a `delta` (revised/new/removed sections).
-3. **Validators** — per-section verdicts: ACCEPT, APPROVE_WITH_NOTES, REVISE, REJECT. Suggestion types: DEEPEN, SIMPLIFY, SPLIT, MERGE, CORRECT, RESTRUCTURE.
-4. **Revision preparer** — orchestrator that runs `build-revision-context.js` via `execute_system_command`. Builds trimmed REVISION_CONTEXT (document overview + flagged sections + original brief) and publishes it via `contentFromOutput`.
-5. **Completion detector** — orchestrator that fires when all validators approve OR `max_iterations` reached. Runs `assemble-doc.js` to produce the final markdown file.
-6. **Assembly** — `assemble-doc.js` reconstructs the document from all DRAFT*READY messages (base + deltas), renumbers sections hierarchically, collects APPROVE_WITH_NOTES as a "Reviewer Notes" appendix, and adds a "Contested Sections" table if terminated by max iterations. Output: `{DOCUMENT_TYPE}*{CLUSTER_ID}.md`.
+Extends the shared pipeline with a revision-preparer stage between validators and the drafter:
 
-#### Key Differences from Review Workflows
+1. **Router** — loads `doc-draft-workflow` base template with tier-specific params. Guards against `_republished` to prevent infinite loops.
+2. **Drafter** — spawns ALL perspective subagents in parallel. Returns full `document` on iteration 1, `delta` (revised/new/removed sections) on iteration 2+.
+3. **Validators** — per-section verdicts (ACCEPT, APPROVE_WITH_NOTES, REVISE, REJECT) with suggestion types (DEEPEN, SIMPLIFY, SPLIT, MERGE, CORRECT, RESTRUCTURE).
+4. **Revision preparer** — orchestrator running `build-revision-context.js` via `execute_system_command`. Publishes trimmed REVISION_CONTEXT via `contentFromOutput`.
+5. **Completion detector** — fires when all validators approve OR `max_iterations` reached. Runs `assemble-doc.js`.
+6. **Assembly** — reconstructs document from all DRAFT*READY messages, renumbers sections, collects APPROVE_WITH_NOTES as appendix. Output: `{DOCUMENT_TYPE}*{CLUSTER_ID}.md`.
 
-- **Non-monotonic revision** — unlike code review (no new findings after iteration 1), doc drafting allows free structural changes: ADD, SPLIT, MERGE, REMOVE, RESTRUCTURE.
-- **Mediated feedback loop** — validators do not directly re-trigger the drafter. Instead: VALIDATION_RESULT → `revision-preparer` (runs script) → REVISION_CONTEXT → drafter. The script pre-processes feedback into a trimmed context.
-- **Perspective menu** — the drafter selects from domain-specific perspectives based on document type (checklists, guides, specifications) rather than using fixed analyst roles.
-- **Dual output schema** — full `document` on iteration 1, `delta` on iteration 2+ (only changed sections).
+**Key differences from review workflows:** Non-monotonic revision (free structural changes). Mediated feedback loop (VALIDATION_RESULT → script → REVISION_CONTEXT → drafter). Domain-specific perspective menu. Dual output schema (full document vs delta).
 
 #### Validators
 
-- **validator-completeness** (always active) — verifies every requirement in the brief has corresponding sections. Uses Claude CLI.
-- **validator-accuracy** (when `validator_count >= 2`) — fact-checks technical claims using CLI tools (Glob, Grep, Read, Bash). Uses Claude CLI.
-- **validator-coherence** (when `validator_count >= 3`) — evaluates logical flow, redundancy, terminology consistency. Uses direct API.
-- **validator-actionability** (when `has_action_items == true && validator_count >= 2`) — verifies ACTION sections are atomic, clear, and executable. Auto-accepts non-action sections. Uses direct API.
+- **validator-completeness** (always) — brief coverage check. Claude CLI.
+- **validator-accuracy** (`validator_count >= 2`) — fact-checks technical claims. Claude CLI.
+- **validator-coherence** (`validator_count >= 3`) — logical flow, redundancy, terminology. Direct API.
+- **validator-actionability** (`has_action_items == true && validator_count >= 2`) — ACTION sections are atomic and executable. Direct API.
 
-All validators use a `transform` hook (not static `config`) to dynamically compute `approved` from `sectionReviews`. All have `onError` hooks that auto-reject with `validatorError: true`.
+All use `transform` hooks to compute `approved` from `sectionReviews`. All auto-reject on error (`validatorError: true`).
 
 #### Files
 
@@ -177,7 +158,7 @@ General-purpose features added to the upstream engine to support the review work
 {
   "action": "load_config",
   "config": {
-    "base": "review-workflow",
+    "base": "docs-review-workflow",
     "params": {
       "tier": "vector",
       "analyst_level": "level2",
@@ -282,17 +263,49 @@ echo 'npm run lint && npm test' > .zeroshot-quality
 
 The init script falls back to heuristic detection (package.json scripts, Cargo.toml, go.mod, pyproject.toml, etc.) when no AI CLI is available. Multi-ecosystem projects (e.g. Laravel + Vite, Tauri) detect both backends.
 
-Both `worker-validator` and `full-workflow` templates accept `quality_gate` (boolean, default: `true`). Disable with `{ "params": { "quality_gate": false } }`.
+Templates with quality gate support: `worker-validator`, `full-workflow`, and `code-review-workflow`. All accept `quality_gate` (boolean, default: `true`). Disable with `{ "params": { "quality_gate": false } }`.
 
-| File                                                     | Purpose                                              |
-| -------------------------------------------------------- | ---------------------------------------------------- |
-| `scripts/quality-gate-runner.js`                         | Reads `.zeroshot-quality`, runs command, JSON output |
-| `scripts/zeroshot-init.sh`                               | One-time setup, generates `.zeroshot-quality`        |
-| `cluster-templates/base-templates/worker-validator.json` | quality-gate agent + dual validator triggers         |
-| `cluster-templates/base-templates/full-workflow.json`    | Same for STANDARD/CRITICAL templates                 |
-| `src/agent/agent-lifecycle.js`                           | `onSuccess`/`onFailure` in execute_system_command    |
-| `src/config-validator.js`                                | Validates onSuccess/onFailure topic fields           |
-| `tests/quality-gate.test.js`                             | 17 tests covering all paths                          |
+**Code review variant:** In code-review workflows, the quality gate runs _before_ analysis (triggers on `ISSUE_OPENED`, not `IMPLEMENTATION_READY`). If it fails, a `quality-gate-stopper` agent fires `exit 1` without `onFailure`, which publishes `CLUSTER_FAILED` and aborts the review — no LLM tokens spent on analysis.
+
+```
+ISSUE_OPENED → quality-gate agent (execute_system_command)
+  ├─ pass → QUALITY_GATE_PASSED → Analyst triggers
+  └─ fail → QUALITY_GATE_FAILED → quality-gate-stopper → CLUSTER_FAILED (review aborted)
+```
+
+The analyst's `ISSUE_OPENED` trigger has a logic gate: `cluster.getAgents().find(a => a.role === 'quality-gate'); return !qg;` — fires directly when no quality-gate agent exists (i.e., `quality_gate: false`).
+
+| File                                                         | Purpose                                              |
+| ------------------------------------------------------------ | ---------------------------------------------------- |
+| `scripts/quality-gate-runner.js`                             | Reads `.zeroshot-quality`, runs command, JSON output |
+| `scripts/zeroshot-init.sh`                                   | One-time setup, generates `.zeroshot-quality`        |
+| `cluster-templates/base-templates/worker-validator.json`     | quality-gate agent + dual validator triggers         |
+| `cluster-templates/base-templates/full-workflow.json`        | Same for STANDARD/CRITICAL templates                 |
+| `cluster-templates/base-templates/code-review-workflow.json` | quality-gate + stopper agents, analyst gating        |
+| `src/agent/agent-lifecycle.js`                               | `onSuccess`/`onFailure` in execute_system_command    |
+| `src/config-validator.js`                                    | Validates onSuccess/onFailure topic fields           |
+| `tests/quality-gate.test.js`                                 | 17 tests covering all paths                          |
+| `tests/quality-gate-code-review.test.js`                     | 9 tests for code-review quality gate integration     |
+
+### CLI Param Overrides (`--skip-quality-gate`)
+
+CLI flags can override template params at runtime via `paramOverrides`. Overrides are stored on the cluster object and merged into template params in `_opLoadConfig()` — they win over conductor-provided params.
+
+```bash
+# Skip quality gate for code reviews
+zeroshot run "review my changes" --config code-review-bell --skip-quality-gate
+
+# Quality gate runs by default (no flag needed)
+zeroshot run "review my changes" --config code-review-bell
+```
+
+The mechanism is generic: `buildStartOptions()` maps CLI flags to `{ param: value }` pairs, which are spread over conductor params before `resolver.resolve()`. Future `--skip-*` flags can piggyback without new plumbing.
+
+| File                            | Purpose                                          |
+| ------------------------------- | ------------------------------------------------ |
+| `cli/index.js`                  | `--skip-quality-gate` option, `paramOverrides`   |
+| `src/orchestrator.js`           | Threads overrides through start → \_opLoadConfig |
+| `tests/param-overrides.test.js` | 4 tests for override mechanism                   |
 
 ### Model Auto-Upgrade
 

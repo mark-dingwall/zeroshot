@@ -1,5 +1,5 @@
 /**
- * Tests for review-workflow boolean params, conditional validators,
+ * Tests for docs-review-workflow boolean params, conditional validators,
  * analyst prompt rendering, and conductor boolean param computation.
  */
 
@@ -15,7 +15,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
     resolver = new TemplateResolver(templatesDir);
   });
 
-  // Base params shared by all review-workflow resolutions
+  // Base params shared by all docs-review-workflow resolutions
   function baseParams(overrides = {}) {
     return {
       tier: 'vector',
@@ -34,7 +34,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
   }
 
   function resolveWorkflow(overrides = {}) {
-    return resolver.resolve('review-workflow', baseParams(overrides));
+    return resolver.resolve('docs-review-workflow', baseParams(overrides));
   }
 
   function getValidatorIds(resolved) {
@@ -443,17 +443,17 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
 
   describe('Boolean param defaults', function () {
     it('has_test_content defaults to false', function () {
-      const info = resolver.getTemplateInfo('review-workflow');
+      const info = resolver.getTemplateInfo('docs-review-workflow');
       assert.strictEqual(info.params.has_test_content.default, false);
     });
 
     it('is_chain defaults to false', function () {
-      const info = resolver.getTemplateInfo('review-workflow');
+      const info = resolver.getTemplateInfo('docs-review-workflow');
       assert.strictEqual(info.params.is_chain.default, false);
     });
 
     it('is_sensitive defaults to false', function () {
-      const info = resolver.getTemplateInfo('review-workflow');
+      const info = resolver.getTemplateInfo('docs-review-workflow');
       assert.strictEqual(info.params.is_sensitive.default, false);
     });
   });
@@ -549,7 +549,7 @@ describe('Review Conductor — Boolean Param Computation', function () {
 });
 
 describe('Direct-Routed Configs — Boolean Param Defaults', function () {
-  // Verify the hardcoded boolean params in review-trace/vector/axiom transform scripts
+  // Verify the hardcoded boolean params in docs-review-trace/vector/axiom transform scripts
   // by checking the JS strings in the JSON files
 
   const fs = require('fs');
@@ -560,22 +560,22 @@ describe('Direct-Routed Configs — Boolean Param Defaults', function () {
     return config.agents[0].hooks.onComplete.transform.script;
   }
 
-  it('review-trace sets all boolean params to false', function () {
-    const script = readTransformScript('review-trace.json');
+  it('docs-review-trace sets all boolean params to false', function () {
+    const script = readTransformScript('docs-review-trace.json');
     assert.ok(script.includes('has_test_content: false'), 'has_test_content should be false');
     assert.ok(script.includes('is_chain: false'), 'is_chain should be false');
     assert.ok(script.includes('is_sensitive: false'), 'is_sensitive should be false');
   });
 
-  it('review-vector sets is_chain: true, others false', function () {
-    const script = readTransformScript('review-vector.json');
+  it('docs-review-vector sets is_chain: true, others false', function () {
+    const script = readTransformScript('docs-review-vector.json');
     assert.ok(script.includes('has_test_content: false'), 'has_test_content should be false');
     assert.ok(script.includes('is_chain: true'), 'is_chain should be true');
     assert.ok(script.includes('is_sensitive: false'), 'is_sensitive should be false');
   });
 
-  it('review-axiom sets is_chain + is_sensitive: true', function () {
-    const script = readTransformScript('review-axiom.json');
+  it('docs-review-axiom sets is_chain + is_sensitive: true', function () {
+    const script = readTransformScript('docs-review-axiom.json');
     assert.ok(script.includes('has_test_content: false'), 'has_test_content should be false');
     assert.ok(script.includes('is_chain: true'), 'is_chain should be true');
     assert.ok(script.includes('is_sensitive: true'), 'is_sensitive should be true');

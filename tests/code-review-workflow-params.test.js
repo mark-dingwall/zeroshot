@@ -84,7 +84,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
         has_api_changes: true,
       });
       const validators = getValidatorIds(resolved);
-      // Code review workflow has no conditional validators (unlike review-workflow)
+      // Code review workflow has no conditional validators (unlike docs-review-workflow)
       assert.deepStrictEqual(validators, ['validator-evidence', 'validator-rigor']);
     });
   });
@@ -353,7 +353,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
   // --- Finding categories ---
 
   describe('Finding categories', function () {
-    it('uses code-review-specific categories, not review-workflow categories', function () {
+    it('uses code-review-specific categories, not docs-review-workflow categories', function () {
       const resolved = resolveWorkflow();
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       const categoryEnum =
@@ -369,7 +369,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
       assert.ok(categoryEnum.includes('MISSING_TEST'), 'Should include MISSING_TEST');
       assert.ok(categoryEnum.includes('STYLE'), 'Should include STYLE');
 
-      // Should NOT include review-workflow categories
+      // Should NOT include docs-review-workflow categories
       assert.ok(!categoryEnum.includes('AMBIGUITY'), 'Should NOT include AMBIGUITY');
       assert.ok(!categoryEnum.includes('CONTRADICTION'), 'Should NOT include CONTRADICTION');
       assert.ok(!categoryEnum.includes('LOGIC_FLAW'), 'Should NOT include LOGIC_FLAW');
