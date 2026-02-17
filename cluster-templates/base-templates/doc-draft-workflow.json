@@ -265,7 +265,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const reviews = result.sectionReviews || []; const approved = reviews.length > 0 && reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
+            "script": "const reviews = result.sectionReviews || []; const approved = reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
           }
         },
         "onError": {
@@ -363,7 +363,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const reviews = result.sectionReviews || []; const approved = reviews.length > 0 && reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
+            "script": "const reviews = result.sectionReviews || []; const approved = reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
           }
         },
         "onError": {
@@ -461,7 +461,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const reviews = result.sectionReviews || []; const approved = reviews.length > 0 && reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
+            "script": "const reviews = result.sectionReviews || []; const approved = reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
           }
         },
         "onError": {
@@ -559,7 +559,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const reviews = result.sectionReviews || []; const approved = reviews.length > 0 && reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
+            "script": "const reviews = result.sectionReviews || []; const approved = reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
           }
         },
         "onError": {

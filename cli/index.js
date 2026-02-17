@@ -481,6 +481,7 @@ function buildStartOptions({
     mounts: options.mount ? parseMountSpecs(options.mount) : undefined,
     containerHome: options.containerHome || undefined,
     forceProvider: forceProvider || undefined,
+    paramOverrides: options.skipQualityGate ? { quality_gate: false } : undefined,
     settings, // Pass settings for provider detection
   };
 }
@@ -2396,6 +2397,7 @@ program
   .option('-d, --detach', 'Run in background (default: attach to first agent)')
   .option('--mount <spec...>', 'Add Docker mount (host:container[:ro]). Repeatable.')
   .option('--no-mounts', 'Disable all Docker credential mounts')
+  .option('--skip-quality-gate', 'Skip quality gate checks (tests/lint) before review')
   .option(
     '--container-home <path>',
     'Container home directory for $HOME expansion (default: /root)'
