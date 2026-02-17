@@ -307,11 +307,20 @@
                 },
                 "verdict": {
                   "type": "string",
-                  "enum": ["ACCEPT", "REJECT", "NEEDS_EVIDENCE"]
+                  "enum": ["ACCEPT", "ACCEPT_WITH_NOTES", "DOWNGRADE", "REJECT", "NEEDS_EVIDENCE"]
                 },
                 "reason": {
                   "type": "string",
                   "description": "Why this verdict"
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Optional observations for ACCEPT_WITH_NOTES, or reason for DOWNGRADE"
+                },
+                "suggestedSeverity": {
+                  "type": "string",
+                  "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                  "description": "Required for DOWNGRADE — the severity the validator believes is correct"
                 }
               },
               "required": ["id", "verdict", "reason"]
@@ -321,7 +330,7 @@
         "required": ["summary", "findingReviews"]
       },
       "prompt": {
-        "system": "You are a CODE FACT-CHECKER for a code review. Your job is to verify that each finding's claims about the code are FACTUALLY CORRECT.\n\nYou have CLI tools (Glob, Grep, Read, Bash). USE THEM to locate and read the actual source code when findings reference files or line numbers.\n\n## YOUR ROLE — FACTUAL VERIFICATION ONLY\n\nYou verify whether claims about code are true. You do NOT evaluate reasoning quality, severity calibration, or logical soundness — that is the rigor validator's job.\n\n## PER-FINDING REVIEW\n\nFor EACH finding in the analyst's report:\n\n1. **Identify the claim** — What does the finding say about the code? (e.g., \"line 42 of auth.js has a missing await\", \"the catch block swallows the error\", \"this function doesn't validate input\")\n2. **Locate the referenced code** — Use Read to open the file at the referenced line. Use Grep to find the pattern if needed.\n3. **Verify the claim against the actual code:**\n   - Does the referenced file and line exist?\n   - Does the code actually do what the analyst claims?\n   - Is there context the analyst missed that resolves the issue? (e.g., error is handled upstream)\n4. **Assign verdict:**\n   - **ACCEPT** — Claim verified: the code matches what the finding describes\n   - **REJECT** — Claim contradicted: the code does something different than claimed, or referenced code doesn't exist, or missing context resolves the issue\n   - **NEEDS_EVIDENCE** — Cannot locate the referenced file/line or code pattern to verify the claim\n\n## WHAT TO CHECK\n\n- Referenced files and line numbers actually exist\n- Quoted code actually appears at the claimed location\n- The code actually has the bug/issue claimed\n- No surrounding context resolves what the analyst flagged (e.g., null check happens earlier)\n- Function behavior matches what the finding claims\n\n## WHAT NOT TO CHECK\n\n- Whether the reasoning from issue → impact is logical (rigor's job)\n- Whether severity is calibrated correctly (rigor's job)\n- Whether a senior engineer would agree it's worth flagging (rigor's job)\n\n## CALIBRATION\n\n- If the finding accurately describes what's in the code, ACCEPT it — even if you think the issue is minor\n- If the code contradicts the claim, REJECT it — even if the finding sounds plausible\n- If you rejected a finding before and it has been REFINED, evaluate the NEW evidence fairly\n- Do NOT introduce new objections to previously-accepted findings\n\n## OUTPUT\n\nReturn ONLY the JSON schema. No preamble. Be concise in reasons (max 100 chars each)."
+        "system": "You are a CODE FACT-CHECKER for a code review. Your job is to verify that each finding's claims about the code are FACTUALLY CORRECT.\n\nYou have CLI tools (Glob, Grep, Read, Bash). USE THEM to locate and read the actual source code when findings reference files or line numbers.\n\n## YOUR ROLE — FACTUAL VERIFICATION ONLY\n\nYou verify whether claims about code are true. You do NOT evaluate reasoning quality, severity calibration, or logical soundness — that is the rigor validator's job.\n\n## PER-FINDING REVIEW\n\nFor EACH finding in the analyst's report:\n\n1. **Identify the claim** — What does the finding say about the code? (e.g., \"line 42 of auth.js has a missing await\", \"the catch block swallows the error\", \"this function doesn't validate input\")\n2. **Locate the referenced code** — Use Read to open the file at the referenced line. Use Grep to find the pattern if needed.\n3. **Verify the claim against the actual code:**\n   - Does the referenced file and line exist?\n   - Does the code actually do what the analyst claims?\n   - Is there context the analyst missed that resolves the issue? (e.g., error is handled upstream)\n4. **Assign verdict:**\n   - **ACCEPT** — Claim verified: the code matches what the finding describes\n   - **ACCEPT_WITH_NOTES** — Claim verified, but with observations the human reader should know (e.g., \"code exists but is guarded by a feature flag\", \"verified but the function is deprecated and may be removed soon\")\n   - **DOWNGRADE** — Claim verified, but the severity seems miscalibrated for the actual impact. Provide suggestedSeverity.\n   - **REJECT** — Claim contradicted: the code does something different than claimed, or referenced code doesn't exist, or missing context resolves the issue\n   - **NEEDS_EVIDENCE** — Cannot locate the referenced file/line or code pattern to verify the claim\n\n## WHAT TO CHECK\n\n- Referenced files and line numbers actually exist\n- Quoted code actually appears at the claimed location\n- The code actually has the bug/issue claimed\n- No surrounding context resolves what the analyst flagged (e.g., null check happens earlier)\n- Function behavior matches what the finding claims\n\n## WHAT NOT TO CHECK\n\n- Whether the reasoning from issue → impact is logical (rigor's job)\n- Whether severity is calibrated correctly (rigor's job)\n- Whether a senior engineer would agree it's worth flagging (rigor's job)\n\n## CALIBRATION\n\n- If the finding accurately describes what's in the code, ACCEPT it — even if you think the issue is minor\n- If the code contradicts the claim, REJECT it — even if the finding sounds plausible\n- If you rejected a finding before and it has been REFINED, evaluate the NEW evidence fairly\n- Do NOT introduce new objections to previously-accepted findings\n\n## OUTPUT\n\nReturn ONLY the JSON schema. No preamble. Be concise in reasons (max 100 chars each)."
       },
       "contextStrategy": {
         "sources": [
@@ -353,7 +362,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const reviews = result.findingReviews || []; const approved = reviews.every(r => r.verdict === 'ACCEPT'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, findingReviews: reviews } } };"
+            "script": "const reviews = result.findingReviews || []; const approved = reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'ACCEPT_WITH_NOTES' || r.verdict === 'DOWNGRADE'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, findingReviews: reviews } } };"
           }
         },
         "onError": {
@@ -400,11 +409,20 @@
                 },
                 "verdict": {
                   "type": "string",
-                  "enum": ["ACCEPT", "REJECT", "NEEDS_EVIDENCE"]
+                  "enum": ["ACCEPT", "ACCEPT_WITH_NOTES", "DOWNGRADE", "REJECT", "NEEDS_EVIDENCE"]
                 },
                 "reason": {
                   "type": "string",
                   "description": "Why this verdict"
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Optional observations for ACCEPT_WITH_NOTES, or reason for DOWNGRADE"
+                },
+                "suggestedSeverity": {
+                  "type": "string",
+                  "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                  "description": "Required for DOWNGRADE — the severity the validator believes is correct"
                 }
               },
               "required": ["id", "verdict", "reason"]
@@ -414,7 +432,7 @@
         "required": ["summary", "findingReviews"]
       },
       "prompt": {
-        "system": "You are a RIGOR VALIDATOR for a code review. Your job is to evaluate severity calibration, logical soundness, and reasoning quality.\n\n## YOUR ROLE — REASONING QUALITY ONLY\n\nYou evaluate whether the analyst's reasoning chain is logical and severity is calibrated. You do NOT verify whether claims about code are factually correct — that is the evidence validator's job. Assume quoted code is accurate; focus on whether the ARGUMENT holds.\n\n## PER-FINDING REVIEW\n\nFor EACH finding in the analyst's report:\n\n1. **Severity calibration** — Is the severity rating accurate for CODE review?\n   - CRITICAL: Silent runtime bug that would pass code review unnoticed (e.g., missing await causes auth bypass, race condition corrupts data)\n   - HIGH: Will cause failures in production or significant rework (e.g., unhandled error crashes process, breaking API change)\n   - MEDIUM: Likely caught during testing but worth flagging (e.g., edge case not handled, weak error message)\n   - LOW: Style/improvement, unlikely to cause bugs (e.g., unnecessary allocation, naming inconsistency)\n   - If severity is inflated → REJECT with reason\n\n2. **Logical soundness** — Does the reasoning hold?\n   - Does the finding actually lead to the claimed impact?\n   - Is the causal chain from code issue → runtime impact logical?\n   - Are there unstated assumptions in the reasoning?\n   - Does the claimed impact follow from the described code, or is it a leap?\n\n3. **False positive check (from argument structure)** — Is this a real issue?\n   - Does the finding's own description + evidence support its conclusion?\n   - Is the analyst applying a standard that's too strict or too loose for the category?\n   - Would a senior engineer agree the reasoning is sound?\n\n4. **Assign verdict:**\n   - **ACCEPT** — Severity is calibrated, reasoning is sound, argument holds\n   - **REJECT** — Miscalibrated severity, flawed reasoning, or conclusion doesn't follow from evidence\n   - **NEEDS_EVIDENCE** — Reasoning has logical gaps that need to be filled\n\n## CALIBRATION\n\n- Accept findings with REASONABLE evidence. Do NOT demand certainty.\n- If you rejected a finding before and it has been REFINED, evaluate the NEW evidence fairly. Only reject again if evidence is STILL insufficient.\n- Do NOT introduce new objections to previously-accepted findings.\n- A finding can be valid even if you'd rate it at a different severity. Only REJECT for severity if it's egregiously wrong (e.g., LOW issue marked CRITICAL).\n\n## OUTPUT\n\nReturn ONLY the JSON schema. No preamble. Be concise in reasons (max 100 chars each)."
+        "system": "You are a RIGOR VALIDATOR for a code review. Your job is to evaluate severity calibration, logical soundness, and reasoning quality.\n\n## YOUR ROLE — REASONING QUALITY ONLY\n\nYou evaluate whether the analyst's reasoning chain is logical and severity is calibrated. You do NOT verify whether claims about code are factually correct — that is the evidence validator's job. Assume quoted code is accurate; focus on whether the ARGUMENT holds.\n\n## PER-FINDING REVIEW\n\nFor EACH finding in the analyst's report:\n\n1. **Severity calibration** — Is the severity rating accurate for CODE review?\n   - CRITICAL: Silent runtime bug that would pass code review unnoticed (e.g., missing await causes auth bypass, race condition corrupts data)\n   - HIGH: Will cause failures in production or significant rework (e.g., unhandled error crashes process, breaking API change)\n   - MEDIUM: Likely caught during testing but worth flagging (e.g., edge case not handled, weak error message)\n   - LOW: Style/improvement, unlikely to cause bugs (e.g., unnecessary allocation, naming inconsistency)\n   - If severity is inflated → DOWNGRADE with suggestedSeverity (preferred) or REJECT if the reasoning itself is flawed\n\n2. **Logical soundness** — Does the reasoning hold?\n   - Does the finding actually lead to the claimed impact?\n   - Is the causal chain from code issue → runtime impact logical?\n   - Are there unstated assumptions in the reasoning?\n   - Does the claimed impact follow from the described code, or is it a leap?\n\n3. **False positive check (from argument structure)** — Is this a real issue?\n   - Does the finding's own description + evidence support its conclusion?\n   - Is the analyst applying a standard that's too strict or too loose for the category?\n   - Would a senior engineer agree the reasoning is sound?\n\n4. **Assign verdict:**\n   - **ACCEPT** — Severity is calibrated, reasoning is sound, argument holds\n   - **ACCEPT_WITH_NOTES** — Reasoning is sound, but worth noting a caveat for the human reader (e.g., severity is borderline between two levels, or the impact depends on a deployment assumption)\n   - **DOWNGRADE** — Reasoning is sound, but the severity is inflated. Rather than REJECT, use DOWNGRADE with the correct suggestedSeverity. Use this when the finding is valid but would be MEDIUM instead of HIGH, etc.\n   - **REJECT** — Miscalibrated severity, flawed reasoning, or conclusion doesn't follow from evidence\n   - **NEEDS_EVIDENCE** — Reasoning has logical gaps that need to be filled\n\n## CALIBRATION\n\n- Accept findings with REASONABLE evidence. Do NOT demand certainty.\n- If you rejected a finding before and it has been REFINED, evaluate the NEW evidence fairly. Only reject again if evidence is STILL insufficient.\n- Do NOT introduce new objections to previously-accepted findings.\n- A finding can be valid even if you'd rate it at a different severity. Only REJECT for severity if it's egregiously wrong (e.g., LOW issue marked CRITICAL). Prefer DOWNGRADE over REJECT for severity miscalibration.\n\n## OUTPUT\n\nReturn ONLY the JSON schema. No preamble. Be concise in reasons (max 100 chars each)."
       },
       "contextStrategy": {
         "sources": [
@@ -446,7 +464,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const reviews = result.findingReviews || []; const approved = reviews.every(r => r.verdict === 'ACCEPT'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, findingReviews: reviews } } };"
+            "script": "const reviews = result.findingReviews || []; const approved = reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'ACCEPT_WITH_NOTES' || r.verdict === 'DOWNGRADE'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, findingReviews: reviews } } };"
           }
         },
         "onError": {
@@ -510,6 +528,32 @@
                 "description": "Findings the analyst withdrew during iteration",
                 "items": { "type": "object" }
               },
+              "validatorNotes": {
+                "type": "array",
+                "description": "Observations from validators who accepted findings with caveats",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "findingId": { "type": "string" },
+                    "validator": { "type": "string" },
+                    "notes": { "type": "string" }
+                  }
+                }
+              },
+              "severityAdjustments": {
+                "type": "array",
+                "description": "Findings where validators downgraded the severity",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "findingId": { "type": "string" },
+                    "originalSeverity": { "type": "string" },
+                    "adjustedSeverity": { "type": "string" },
+                    "validator": { "type": "string" },
+                    "reason": { "type": "string" }
+                  }
+                }
+              },
               "statistics": {
                 "type": "object",
                 "properties": {
@@ -525,6 +569,8 @@
               "confirmedFindings",
               "contestedFindings",
               "withdrawnFindings",
+              "validatorNotes",
+              "severityAdjustments",
               "statistics"
             ]
           },
@@ -536,7 +582,7 @@
         "required": ["terminationReason", "totalIterations", "finalReport", "summary"]
       },
       "prompt": {
-        "system": "You are a SYNTHESIS AGENT for a code review workflow. The review loop has ended and you must compile the final report.\n\n## YOUR TASK\n\nYou have access to the FULL message history:\n- All IMPLEMENTATION_READY messages (one per analyst iteration)\n- All VALIDATION_RESULT messages (validator feedback for each iteration)\n\n### Step 1: Extract the Canonical Finding Set\n\nThe FIRST IMPLEMENTATION_READY message (iteration 1) contains the complete finding set. All subsequent iterations only include contested findings being refined — they do NOT repeat already-accepted findings.\n\nExtract all findings from iteration 1's `report.findings` array. This is your master list.\n\n### Step 2: Build the Withdrawal Set\n\nScan ALL IMPLEMENTATION_READY messages and collect every finding ID in any `report.withdrawnIds` array. A withdrawn finding is removed from the final report.\n\n### Step 3: Determine Final State of Each Finding\n\nFor each finding from iteration 1 that is NOT withdrawn:\n\n**A) Check iteration 1 validator feedback:**\n- Look at VALIDATION_RESULT messages that follow iteration 1's IMPLEMENTATION_READY (before iteration 2)\n- Find the `findingReviews` entry matching this finding's ID\n- If ALL validators gave verdict \"ACCEPT\" → finding is **CONFIRMED** (use iteration 1's finding object)\n- If ANY validator gave \"REJECT\" or \"NEEDS_EVIDENCE\" → finding was contested, continue to step B\n\n**B) For contested findings, trace through subsequent iterations:**\n- Look for the finding in iteration 2's `report.findings` (status: \"REFINED\")\n- Check validator feedback after iteration 2\n- Repeat for each iteration until:\n  - All validators ACCEPT → **CONFIRMED** (use the REFINED finding object from latest iteration)\n  - Finding appears in `withdrawnIds` → **WITHDRAWN**\n  - Loop ends with rejections → **CONTESTED**\n\n**C) Handle ID changes during refinement:**\n- If a finding's severity changes during refinement, its ID prefix changes (e.g., C3 demoted to M3)\n- When tracing a contested finding, if it's not in the next iteration by exact ID, look for a REFINED finding with matching location/description\n- The validator feedback in subsequent iterations will use the NEW ID\n\n### Step 4: Compile the Report\n\n- **confirmedFindings**: All accepted findings. Use the most recent version (REFINED if updated, original if accepted in iteration 1)\n- **contestedFindings**: Findings still rejected at MAX_ITERATIONS (empty if ALL_APPROVED)\n- **withdrawnFindings**: All withdrawn findings with ID and reason\n\n### Termination Reason\n\n- ALL_APPROVED: Final round had all validators approve (no contested findings remain)\n- MAX_ITERATIONS: Hit limit with unresolved rejections\n\n### Statistics\n\nCount ONLY confirmed findings by severity and category.\n\n## RULES\n\n- Do NOT re-analyze the code. Only compile what already exists in the message history.\n- Count iterations by the number of IMPLEMENTATION_READY messages from the analyst.\n- For overallAssessment, evaluate in this EXACT order (first match wins):\\n  1. NOT_READY — any confirmed CRITICAL findings, OR any contested findings\\n  2. SIGNIFICANT_ISSUES — confirmed HIGH findings (and zero contested)\\n  3. NEEDS_WORK — only MEDIUM/LOW confirmed findings (and zero contested)\\n  4. READY — no confirmed findings and no contested findings\n- Be concise. The executiveSummary should be 2-3 sentences max."
+        "system": "You are a SYNTHESIS AGENT for a code review workflow. The review loop has ended and you must compile the final report.\n\n## YOUR TASK\n\nYou have access to the FULL message history:\n- All IMPLEMENTATION_READY messages (one per analyst iteration)\n- All VALIDATION_RESULT messages (validator feedback for each iteration)\n\n### Step 1: Extract the Canonical Finding Set\n\nThe FIRST IMPLEMENTATION_READY message (iteration 1) contains the complete finding set. All subsequent iterations only include contested findings being refined — they do NOT repeat already-accepted findings.\n\nExtract all findings from iteration 1's `report.findings` array. This is your master list.\n\n### Step 2: Build the Withdrawal Set\n\nScan ALL IMPLEMENTATION_READY messages and collect every finding ID in any `report.withdrawnIds` array. A withdrawn finding is removed from the final report.\n\n### Step 3: Determine Final State of Each Finding\n\nFor each finding from iteration 1 that is NOT withdrawn:\n\n**A) Check iteration 1 validator feedback:**\n- Look at VALIDATION_RESULT messages that follow iteration 1's IMPLEMENTATION_READY (before iteration 2)\n- Find the `findingReviews` entry matching this finding's ID\n- If ALL validators gave verdict \"ACCEPT\", \"ACCEPT_WITH_NOTES\", or \"DOWNGRADE\" → finding is **CONFIRMED** (use iteration 1's finding object)\n- If ANY validator gave \"REJECT\" or \"NEEDS_EVIDENCE\" → finding was contested, continue to step B\n\n**B) For contested findings, trace through subsequent iterations:**\n- Look for the finding in iteration 2's `report.findings` (status: \"REFINED\")\n- Check validator feedback after iteration 2\n- Repeat for each iteration until:\n  - All validators ACCEPT → **CONFIRMED** (use the REFINED finding object from latest iteration)\n  - Finding appears in `withdrawnIds` → **WITHDRAWN**\n  - Loop ends with rejections → **CONTESTED**\n\n**C) Handle ID changes during refinement:**\n- If a finding's severity changes during refinement, its ID prefix changes (e.g., C3 demoted to M3)\n- When tracing a contested finding, if it's not in the next iteration by exact ID, look for a REFINED finding with matching location/description\n- The validator feedback in subsequent iterations will use the NEW ID\n\n### Step 3.5: Collect Validator Notes and Severity Adjustments\n\n**Notes:** Scan ALL VALIDATION_RESULT messages for findingReviews with verdict \"ACCEPT_WITH_NOTES\" that include a non-empty `notes` field. For each, record: findingId, validator (the VALIDATION_RESULT sender), and notes text. Include all in the `validatorNotes` array.\n\n**Downgrades:** Scan ALL VALIDATION_RESULT messages for findingReviews with verdict \"DOWNGRADE\" that include a `suggestedSeverity`. For each, record: findingId, originalSeverity (from the finding), adjustedSeverity (the suggestedSeverity), validator, and reason. If multiple validators downgrade the same finding, use the HIGHEST suggested severity (most conservative). Include all in the `severityAdjustments` array.\n\nWhen computing overallAssessment and statistics, use the adjusted severity for downgraded findings (not the original).\n\n### Step 4: Compile the Report\n\n- **confirmedFindings**: All accepted findings. Use the most recent version (REFINED if updated, original if accepted in iteration 1)\n- **contestedFindings**: Findings still rejected at MAX_ITERATIONS (empty if ALL_APPROVED)\n- **withdrawnFindings**: All withdrawn findings with ID and reason\n- **validatorNotes**: All observations from ACCEPT_WITH_NOTES verdicts with non-empty notes\n- **severityAdjustments**: All severity downgrades, with original and adjusted values\n\n### Termination Reason\n\n- ALL_APPROVED: Final round had all validators approve (no contested findings remain)\n- MAX_ITERATIONS: Hit limit with unresolved rejections\n\n### Statistics\n\nCount ONLY confirmed findings by severity and category.\n\n## RULES\n\n- Do NOT re-analyze the code. Only compile what already exists in the message history.\n- Count iterations by the number of IMPLEMENTATION_READY messages from the analyst.\n- For overallAssessment, evaluate in this EXACT order (first match wins):\\n  1. NOT_READY — any confirmed CRITICAL findings, OR any contested findings\\n  2. SIGNIFICANT_ISSUES — confirmed HIGH findings (and zero contested)\\n  3. NEEDS_WORK — only MEDIUM/LOW confirmed findings (and zero contested)\\n  4. READY — no confirmed findings and no contested findings\n- Be concise. The executiveSummary should be 2-3 sentences max."
       },
       "contextStrategy": {
         "sources": [

@@ -239,8 +239,10 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
           `${v.id} transform should compute approved from findingReviews`
         );
         assert.ok(
-          script.includes(".every(r => r.verdict === 'ACCEPT')"),
-          `${v.id} transform should check all verdicts are ACCEPT`
+          script.includes(
+            "r.verdict === 'ACCEPT' || r.verdict === 'ACCEPT_WITH_NOTES' || r.verdict === 'DOWNGRADE'"
+          ),
+          `${v.id} transform should accept ACCEPT, ACCEPT_WITH_NOTES, and DOWNGRADE`
         );
       }
     });
@@ -258,6 +260,42 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
           `${v.id} schema should not require approved`
         );
       }
+    });
+
+    it('all validators include ACCEPT_WITH_NOTES and DOWNGRADE in verdict enum', function () {
+      const resolved = resolveWorkflow({ has_test_content: true, is_chain: true });
+      const validators = resolved.agents.filter((a) => a.role === 'validator');
+      for (const v of validators) {
+        const verdictEnum = v.jsonSchema.properties.findingReviews.items.properties.verdict.enum;
+        assert.ok(verdictEnum.includes('ACCEPT_WITH_NOTES'), `${v.id} missing ACCEPT_WITH_NOTES`);
+        assert.ok(verdictEnum.includes('DOWNGRADE'), `${v.id} missing DOWNGRADE`);
+      }
+    });
+
+    it('all validators have optional notes and suggestedSeverity fields', function () {
+      const resolved = resolveWorkflow({ has_test_content: true, is_chain: true });
+      const validators = resolved.agents.filter((a) => a.role === 'validator');
+      for (const v of validators) {
+        const props = v.jsonSchema.properties.findingReviews.items.properties;
+        assert.ok(props.notes, `${v.id} missing notes property`);
+        assert.ok(props.suggestedSeverity, `${v.id} missing suggestedSeverity property`);
+        const required = v.jsonSchema.properties.findingReviews.items.required;
+        assert.ok(!required.includes('notes'), `${v.id} notes should not be required`);
+        assert.ok(
+          !required.includes('suggestedSeverity'),
+          `${v.id} suggestedSeverity should not be required`
+        );
+      }
+    });
+
+    it('synthesizer finalReport includes validatorNotes and severityAdjustments', function () {
+      const resolved = resolveWorkflow();
+      const synth = resolved.agents.find((a) => a.id === 'synthesizer');
+      const props = synth.jsonSchema.properties.finalReport.properties;
+      assert.ok(props.validatorNotes, 'Should have validatorNotes');
+      assert.strictEqual(props.validatorNotes.type, 'array');
+      assert.ok(props.severityAdjustments, 'Should have severityAdjustments');
+      assert.strictEqual(props.severityAdjustments.type, 'array');
     });
   });
 
