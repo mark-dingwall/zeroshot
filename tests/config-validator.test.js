@@ -3151,3 +3151,152 @@ describe('Hook Logic Validation - missing output', function () {
     );
   });
 });
+
+// === H3: execute_system_command action-type awareness ===
+
+describe('H3: hooks.onComplete action-type awareness', function () {
+  it('should warn when execute_system_command agent has hooks.onComplete', function () {
+    const result = validateConfig({
+      agents: [
+        {
+          id: 'bootstrap',
+          role: 'implementation',
+          triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+          hooks: { onComplete: { action: 'publish_message', config: { topic: 'WORK_DONE' } } },
+        },
+        {
+          id: 'sys-agent',
+          role: 'orchestrator',
+          triggers: [
+            {
+              topic: 'WORK_DONE',
+              action: 'execute_system_command',
+              config: { command: 'echo ok' },
+            },
+          ],
+          hooks: {
+            onComplete: {
+              action: 'publish_message',
+              config: { topic: 'NEVER_FIRES' },
+            },
+          },
+        },
+        {
+          id: 'orch',
+          role: 'orchestrator',
+          triggers: [{ topic: 'NEVER_FIRES', action: 'stop_cluster' }],
+        },
+      ],
+    });
+    assert.ok(
+      result.warnings.some((w) => w.includes('hooks.onComplete will never fire')),
+      `Expected warning about dead onComplete. Warnings: ${result.warnings.join(', ')}`
+    );
+  });
+
+  it('should register onSuccess topics from execute_system_command triggers', function () {
+    const result = validateConfig({
+      agents: [
+        {
+          id: 'bootstrap',
+          role: 'implementation',
+          triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+          hooks: { onComplete: { action: 'publish_message', config: { topic: 'WORK_DONE' } } },
+        },
+        {
+          id: 'gate',
+          role: 'orchestrator',
+          triggers: [
+            {
+              topic: 'WORK_DONE',
+              action: 'execute_system_command',
+              config: {
+                command: 'echo ok',
+                onSuccess: { topic: 'GATE_PASSED' },
+              },
+            },
+          ],
+        },
+        {
+          id: 'orch',
+          role: 'orchestrator',
+          triggers: [{ topic: 'GATE_PASSED', action: 'stop_cluster' }],
+        },
+      ],
+    });
+    // GATE_PASSED should be recognized as produced (no "never produced" error)
+    const unproducedErrors = result.errors.filter(
+      (e) => e.includes("'GATE_PASSED'") && e.includes('never produced')
+    );
+    assert.strictEqual(
+      unproducedErrors.length,
+      0,
+      `GATE_PASSED should be registered as produced. Errors: ${result.errors.join(', ')}`
+    );
+  });
+
+  it('should not warn when execute_task agent has hooks.onComplete', function () {
+    const result = validateConfig({
+      agents: [
+        {
+          id: 'worker',
+          role: 'implementation',
+          triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+          hooks: { onComplete: { action: 'publish_message', config: { topic: 'WORK_DONE' } } },
+        },
+        {
+          id: 'orch',
+          role: 'orchestrator',
+          triggers: [{ topic: 'WORK_DONE', action: 'stop_cluster' }],
+        },
+      ],
+    });
+    const onCompleteWarnings = result.warnings.filter((w) =>
+      w.includes('hooks.onComplete will never fire')
+    );
+    assert.strictEqual(
+      onCompleteWarnings.length,
+      0,
+      `Should not warn for execute_task agent. Warnings: ${result.warnings.join(', ')}`
+    );
+  });
+});
+
+// === M1: Optional chaining in reportMissingValidationTriggers ===
+
+describe('M1: trigger without topic field', function () {
+  it('should not crash when trigger has no topic field', function () {
+    // This tests the optional chaining fix for t.topic?.includes('VALIDATION')
+    const result = analyzeMessageFlow({
+      agents: [
+        {
+          id: 'worker',
+          role: 'implementation',
+          triggers: [
+            { topic: 'ISSUE_OPENED', action: 'execute_task' },
+            { action: 'execute_task' }, // no topic field
+          ],
+          hooks: { onComplete: { action: 'publish_message', config: { topic: 'DONE' } } },
+        },
+        {
+          id: 'validator',
+          role: 'validator',
+          triggers: [{ topic: 'DONE', action: 'execute_task' }],
+          hooks: {
+            onComplete: {
+              action: 'publish_message',
+              config: { topic: 'VALIDATION_RESULT' },
+            },
+          },
+        },
+        {
+          id: 'orch',
+          role: 'orchestrator',
+          triggers: [{ topic: 'VALIDATION_RESULT', action: 'stop_cluster' }],
+        },
+      ],
+    });
+    // Should not throw — the test passing is the assertion
+    assert.ok(Array.isArray(result.errors));
+  });
+});

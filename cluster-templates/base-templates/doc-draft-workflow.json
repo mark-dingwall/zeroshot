@@ -1,0 +1,624 @@
+{
+  "name": "Document Draft Workflow",
+  "description": "Drafter spawns perspective subagents to generate a structured document, validators review sections, revision loop until approved. For document generation.",
+  "params": {
+    "tier": {
+      "type": "string",
+      "enum": ["facet", "lens", "prism"],
+      "default": "lens"
+    },
+    "drafter_level": {
+      "type": "string",
+      "enum": ["level1", "level2", "level3"],
+      "default": "level2"
+    },
+    "validator_count": {
+      "type": "number",
+      "default": 2
+    },
+    "max_iterations": {
+      "type": "number",
+      "default": 4
+    },
+    "max_tokens": {
+      "type": "number",
+      "default": 150000
+    },
+    "has_action_items": {
+      "type": "boolean",
+      "default": false,
+      "description": "True when document contains actionable items (checklists, task lists)"
+    }
+  },
+  "agents": [
+    {
+      "id": "drafter",
+      "role": "implementation",
+      "modelLevel": "{{drafter_level}}",
+      "useDirectApi": false,
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "Brief description of what was drafted/revised"
+          },
+          "completionStatus": {
+            "type": "object",
+            "properties": {
+              "canValidate": {
+                "type": "boolean",
+                "description": "true when document is ready for validator review"
+              },
+              "percentComplete": {
+                "type": "number",
+                "description": "Estimated completion percentage (0-100)"
+              }
+            },
+            "required": ["canValidate", "percentComplete"]
+          },
+          "document": {
+            "type": "object",
+            "description": "Full document (iteration 1 only)",
+            "properties": {
+              "title": { "type": "string" },
+              "documentType": {
+                "type": "string",
+                "enum": ["CHECKLIST", "GUIDE", "SPECIFICATION", "PLAN", "OTHER"]
+              },
+              "sections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Section ID: category prefix + count (I1, C1, A1, R1, E1, W1, O1)"
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "INTRODUCTION",
+                        "CONTEXT",
+                        "ACTION",
+                        "REFERENCE",
+                        "EXAMPLE",
+                        "WARNING",
+                        "OTHER"
+                      ]
+                    },
+                    "heading": { "type": "string" },
+                    "depth": { "type": "number", "description": "Heading depth (2-6)" },
+                    "content": { "type": "string", "description": "Markdown content" },
+                    "perspective": {
+                      "type": "string",
+                      "description": "Which perspective contributed this"
+                    },
+                    "justification": { "type": "string", "description": "Why this section matters" }
+                  },
+                  "required": ["id", "category", "heading", "depth", "content", "perspective"]
+                }
+              },
+              "perspectivesUsed": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "required": ["title", "documentType", "sections", "perspectivesUsed"]
+          },
+          "delta": {
+            "type": "object",
+            "description": "Delta changes (iteration 2+ only)",
+            "properties": {
+              "revisedSections": { "type": "array", "items": { "type": "object" } },
+              "newSections": { "type": "array", "items": { "type": "object" } },
+              "removedSections": { "type": "array", "items": { "type": "object" } }
+            }
+          }
+        },
+        "required": ["summary", "completionStatus"]
+      },
+      "prompt": {
+        "initial": "You are a DOCUMENT DRAFTER. Your job is to generate a comprehensive, well-structured document based on the brief provided in ISSUE_OPENED.\n\n## TIER: {{tier}} | MAX ITERATIONS: {{max_iterations}}\n\n## YOUR PROCESS\n\n1. **Read the brief** from ISSUE_OPENED carefully. Identify what type of document is needed (checklist, guide, specification, plan).\n\n2. **Select perspectives** from the menu below based on the document type and brief. Then **spawn ALL subagent perspectives in parallel** — make ALL Task tool calls in a SINGLE message so they execute concurrently. Use subagent_type: \"general-purpose\" for each. Each subagent gets the brief + their perspective prompt. They return structured sections independently.\n\n3. **Synthesize** all subagent outputs into a single structured document with non-overlapping sections.\n\n## PERSPECTIVE MENU\n\nSelect perspectives based on document type:\n\n### Checklists\n- **Task Decomposition Analyst** — Break high-level tasks into atomic, verifiable steps. Each step should have a clear done-state.\n- **Sequencing Strategist** — Identify dependencies between tasks, optimal ordering, parallelization opportunities.\n- **Technical Depth Specialist** — Add implementation details, specific commands, configuration values, code snippets.\n- **Risk & Blocker Identifier** — Flag potential blockers, prerequisites, common failure points, rollback procedures.\n- **Completeness Auditor** — Check for missing phases, overlooked concerns, implicit assumptions.\n\n### Guides\n- **Beginner Accessibility Specialist** — Ensure prerequisites are explicit, jargon is defined, steps are followable by target audience.\n- **Example Generator** — Add concrete examples, sample commands, expected outputs for each concept.\n- **Troubleshooting Anticipator** — Add common errors, gotchas, debugging steps for each section.\n- **Prerequisites Mapper** — Identify and document all prerequisite knowledge, tools, access needed.\n\n### Specifications\n- **Interface Designer** — Define clear API contracts, input/output formats, error responses.\n- **Edge Case Mapper** — Identify boundary conditions, null cases, concurrent access, resource limits.\n- **Integration Analyst** — Document external dependencies, version constraints, compatibility requirements.\n\nYou may also invent domain-specific perspectives when the brief demands expertise beyond the menu (e.g., \"Platform Equivalence Mapper\" for a porting checklist).\n\n## PERSPECTIVE COUNT BY TIER\n\n{{#if tier == 'facet'}}\n**FACET tier**: Spawn 2-3 perspectives. Pick the most relevant for the document type.\n{{/if}}\n{{#if tier == 'lens'}}\n**LENS tier**: Spawn 3-5 perspectives. Cover the core concerns plus domain-specific angles.\n{{/if}}\n{{#if tier == 'prism'}}\n**PRISM tier**: Spawn 5-8 perspectives. Maximum breadth — use ALL relevant menu perspectives plus domain-specific ones. Spawn ALL in a SINGLE message.\n{{/if}}\n\n## SUBAGENT PROMPT TEMPLATE\n\nFor each subagent Task call, use this pattern:\n```\nYou are a [PERSPECTIVE NAME] helping draft a document.\n\nPERSPECTIVE: [description of what to contribute]\n\nBRIEF:\n[paste the full brief text here]\n\nRules:\n- Generate structured sections with clear headings\n- Each section needs: id (category prefix + count), category (INTRODUCTION|CONTEXT|ACTION|REFERENCE|EXAMPLE|WARNING|OTHER), heading, depth (2-6), content (markdown), perspective (your name), justification (why this section matters)\n- Section ID format: I1, C1, A1, R1, E1, W1, O1 (category prefix + sequential number)\n- Be specific and actionable. \"Set up the project\" is not a section. \"Initialize npm project with TypeScript and configure tsconfig.json\" IS a section.\n- Include code snippets, commands, and examples where relevant.\n- Do NOT duplicate content another perspective would cover.\n\nReturn your sections as a JSON array.\n```\n\n## SECTION ID FORMAT\n\nCategory prefix + sequential count: I1, I2 (INTRODUCTION), C1, C2 (CONTEXT), A1, A2 (ACTION), R1, R2 (REFERENCE), E1, E2 (EXAMPLE), W1, W2 (WARNING), O1, O2 (OTHER).\n\nFor splits in later iterations: hierarchical suffix (A4a, A4b, A4a-i) — internal tracking only, renumbered in final output.\n\n## OUTPUT\n\nReturn the full document structure with ALL sections. Set canValidate: true when complete.\n\nIMPORTANT: On iteration 1, use the `document` field. On iteration 2+, use the `delta` field (you will receive REVISION_CONTEXT with specific sections to revise).",
+        "subsequent": "You are a DOCUMENT DRAFTER on iteration 2+. Validators have reviewed your document and flagged sections for revision.\n\n## TIER: {{tier}} | ITERATION RULES\n\n## REVISION CONTEXT\n\nYou receive REVISION_CONTEXT containing:\n- **documentOverview**: All section IDs + headings + verdicts (structural map)\n- **revisionsNeeded**: Full content of flagged sections + validator feedback\n- **originalBrief**: The original ISSUE_OPENED text\n\nYou ONLY need to revise sections listed in `revisionsNeeded`. Accepted sections are already final.\n\n## WHAT YOU CAN DO\n\nUnlike code review (monotonic), document generation is exploratory. You may freely:\n- **REVISE** — Improve flagged sections based on feedback\n- **ADD** — Create new sections if validators identified gaps\n- **SPLIT** — Break a section into subsections (prefer siblings over children where appropriate, but use nesting when contextually sensible)\n- **MERGE** — Combine redundant sections\n- **REMOVE** — Delete sections that don't belong\n- **RESTRUCTURE** — Change section ordering or depth\n\n## DELTA OUTPUT FORMAT\n\nReturn ONLY the changes:\n- `delta.revisedSections` — Sections you rewrote (same ID, new content)\n- `delta.newSections` — New sections (with `insertAfter` or `replaces` field)\n- `delta.removedSections` — Sections to remove (just IDs)\n\nDo NOT re-include accepted sections.\n\n## HANDLING VALIDATOR SUGGESTIONS\n\n| Suggestion | What to do |\n|------------|------------|\n| DEEPEN | Add more detail, examples, specifics |\n| SIMPLIFY | Reduce complexity, split into smaller steps |\n| SPLIT | Break into subsections (A4 → A4a, A4b) |\n| MERGE | Combine with another section |\n| CORRECT | Fix factual/technical errors |\n| RESTRUCTURE | Change position or depth in document |\n\n{{#if tier == 'facet'}}\n**FACET tier**: Focus on the most impactful revisions. If a section has minor issues, fix them directly rather than spawning subagents.\n{{/if}}\n{{#if tier == 'lens'}}\n**LENS tier**: For each flagged section, consider whether the revision benefits from a fresh perspective subagent or can be done directly.\n{{/if}}\n{{#if tier == 'prism'}}\n**PRISM tier**: Spawn subagents for each flagged section to get thorough revisions. Each subagent gets the section content + feedback + original brief.\n{{/if}}\n\n## FINAL ITERATION CHECK\n\nIf this is your last allowed iteration, produce the best revision you can. Prioritize REJECT items over REVISE items.\n\nSet canValidate: true when done."
+      },
+      "contextStrategy": {
+        "sources": [
+          {
+            "topic": "ISSUE_OPENED",
+            "priority": "required",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "REVISION_CONTEXT",
+            "priority": "high",
+            "since": "last_task_end",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": "{{max_tokens}}"
+      },
+      "triggers": [
+        {
+          "topic": "ISSUE_OPENED",
+          "action": "execute_task"
+        },
+        {
+          "topic": "REVISION_CONTEXT",
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": {
+            "topic": "DRAFT_READY",
+            "content": {
+              "text": "{{result.summary}}",
+              "data": {
+                "completionStatus": "{{result.completionStatus}}",
+                "document": "{{result.document}}",
+                "delta": "{{result.delta}}"
+              }
+            }
+          }
+        },
+        "onError": {
+          "action": "publish_message",
+          "config": {
+            "topic": "DRAFT_READY",
+            "content": {
+              "text": "Drafter crashed - publishing error for graceful termination",
+              "data": {
+                "completionStatus": { "canValidate": false, "percentComplete": 0 },
+                "document": {
+                  "title": "ERROR",
+                  "documentType": "OTHER",
+                  "sections": [],
+                  "perspectivesUsed": []
+                }
+              }
+            }
+          }
+        }
+      },
+      "maxIterations": "{{max_iterations}}"
+    },
+    {
+      "id": "validator-completeness",
+      "role": "validator",
+      "modelLevel": "level2",
+      "useDirectApi": false,
+      "maxRetries": 3,
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "One-line validation result"
+          },
+          "sectionReviews": {
+            "type": "array",
+            "description": "Per-section verdict",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "description": "Section ID (e.g., A1, C2)" },
+                "verdict": {
+                  "type": "string",
+                  "enum": ["ACCEPT", "APPROVE_WITH_NOTES", "REVISE", "REJECT"]
+                },
+                "reason": { "type": "string", "description": "Why this verdict" },
+                "suggestions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["DEEPEN", "SIMPLIFY", "SPLIT", "MERGE", "CORRECT", "RESTRUCTURE"]
+                  }
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Optional notes for APPROVE_WITH_NOTES"
+                }
+              },
+              "required": ["id", "verdict", "reason"]
+            }
+          }
+        },
+        "required": ["summary", "sectionReviews"]
+      },
+      "prompt": {
+        "system": "You are a COMPLETENESS VALIDATOR for a document draft. Your job is to verify that the document covers all aspects of the brief and that no critical sections are missing.\n\nYou have CLI tools (Glob, Grep, Read, Bash). USE THEM to verify technical claims when the document references files, commands, or configurations.\n\n## YOUR ROLE — COVERAGE AND COMPLETENESS ONLY\n\nYou verify that:\n1. Every requirement in the brief has corresponding section(s)\n2. No critical topics are missing\n3. Section dependencies are coherent (no section references undefined concepts)\n4. Depth is appropriate (no section is too shallow for its importance)\n\n## PER-SECTION REVIEW\n\nFor EACH section in the draft:\n\n1. **Coverage check** — Does this section adequately address its topic?\n2. **Depth check** — Is there enough detail for the target audience?\n3. **Dependency check** — Does it reference concepts that aren't defined elsewhere?\n4. **Gap check** — Are there obvious sub-topics it should cover but doesn't?\n\n## VERDICTS\n\n- **ACCEPT** — Section is complete and well-covered\n- **APPROVE_WITH_NOTES** — Accepted, but has suggestions for human to consider post-generation\n- **REVISE** — Missing important content, needs specific additions (include suggestions)\n- **REJECT** — Fundamentally incomplete or wrong topic, should be rewritten\n\n## SUGGESTIONS (on REVISE/REJECT)\n\nUse suggestion types: DEEPEN (add detail), SIMPLIFY (too complex), SPLIT (too broad), MERGE (redundant with another), CORRECT (wrong info), RESTRUCTURE (wrong place in doc).\n\n## ALSO CHECK FOR MISSING SECTIONS\n\nAfter reviewing existing sections, identify any topics from the brief that have NO corresponding section. For missing topics, add a review entry with id \"MISSING_[topic]\" and verdict REJECT.\n\n## CALIBRATION\n\n- If you previously gave REVISE/REJECT and the section has been revised, evaluate the NEW content fairly.\n- Do NOT re-flag previously accepted sections.\n- Accept sections with reasonable coverage. Do NOT demand encyclopedic depth.\n\n## OUTPUT\n\nReturn ONLY the JSON schema. Be concise in reasons (max 150 chars each)."
+      },
+      "contextStrategy": {
+        "sources": [
+          {
+            "topic": "ISSUE_OPENED",
+            "priority": "required",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "DRAFT_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": "{{max_tokens}}"
+      },
+      "triggers": [
+        {
+          "topic": "DRAFT_READY",
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "transform": {
+            "engine": "javascript",
+            "script": "const reviews = result.sectionReviews || []; const approved = reviews.length > 0 && reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
+          }
+        },
+        "onError": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "Validator validator-completeness failed - auto-rejecting to force re-examination",
+              "data": {
+                "approved": false,
+                "summary": "VALIDATOR_ERROR: validator-completeness crashed and auto-rejected",
+                "sectionReviews": [],
+                "validatorError": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "validator-accuracy",
+      "role": "validator",
+      "modelLevel": "level2",
+      "useDirectApi": false,
+      "maxRetries": 3,
+      "condition": "{{validator_count}} >= 2",
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "One-line validation result"
+          },
+          "sectionReviews": {
+            "type": "array",
+            "description": "Per-section verdict",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "description": "Section ID (e.g., A1, C2)" },
+                "verdict": {
+                  "type": "string",
+                  "enum": ["ACCEPT", "APPROVE_WITH_NOTES", "REVISE", "REJECT"]
+                },
+                "reason": { "type": "string", "description": "Why this verdict" },
+                "suggestions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["DEEPEN", "SIMPLIFY", "SPLIT", "MERGE", "CORRECT", "RESTRUCTURE"]
+                  }
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Optional notes for APPROVE_WITH_NOTES"
+                }
+              },
+              "required": ["id", "verdict", "reason"]
+            }
+          }
+        },
+        "required": ["summary", "sectionReviews"]
+      },
+      "prompt": {
+        "system": "You are an ACCURACY VALIDATOR for a document draft. Your job is to verify that factual and technical claims in the document are correct.\n\nYou have CLI tools (Glob, Grep, Read, Bash). USE THEM to verify commands, file paths, API calls, version numbers, and technical details.\n\n## YOUR ROLE — FACTUAL AND TECHNICAL ACCURACY ONLY\n\nYou verify that:\n1. Commands and code snippets actually work as described\n2. File paths and API references are correct\n3. Technical descriptions match reality\n4. Version numbers and compatibility claims are accurate\n5. Configuration examples are valid\n\nYou do NOT evaluate coverage (completeness validator's job) or logical flow (coherence validator's job).\n\n## PER-SECTION REVIEW\n\nFor EACH section:\n\n1. **Identify technical claims** — Commands, paths, versions, APIs, configurations\n2. **Verify each claim** — Use tools to check accuracy. Run commands if safe. Read referenced files.\n3. **Flag incorrect claims** — Specific quote + what's actually correct\n\n## VERDICTS\n\n- **ACCEPT** — All technical claims verified or no technical claims to verify\n- **APPROVE_WITH_NOTES** — Minor inaccuracies that don't affect usability, noted for human\n- **REVISE** — Contains incorrect technical details that need fixing\n- **REJECT** — Fundamentally wrong technical approach or dangerous advice\n\n## CALIBRATION\n\n- Accept sections with no verifiable technical claims (pure prose, context, etc.)\n- Only REJECT for errors that would cause real problems if followed\n- If you rejected before and the section has been revised, evaluate NEW content fairly\n\n## OUTPUT\n\nReturn ONLY the JSON schema. Be concise in reasons (max 150 chars each)."
+      },
+      "contextStrategy": {
+        "sources": [
+          {
+            "topic": "ISSUE_OPENED",
+            "priority": "required",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "DRAFT_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": "{{max_tokens}}"
+      },
+      "triggers": [
+        {
+          "topic": "DRAFT_READY",
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "transform": {
+            "engine": "javascript",
+            "script": "const reviews = result.sectionReviews || []; const approved = reviews.length > 0 && reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
+          }
+        },
+        "onError": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "Validator validator-accuracy failed - auto-rejecting to force re-examination",
+              "data": {
+                "approved": false,
+                "summary": "VALIDATOR_ERROR: validator-accuracy crashed and auto-rejected",
+                "sectionReviews": [],
+                "validatorError": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "validator-coherence",
+      "role": "validator",
+      "modelLevel": "level2",
+      "useDirectApi": true,
+      "maxRetries": 3,
+      "condition": "{{validator_count}} >= 3",
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "One-line validation result"
+          },
+          "sectionReviews": {
+            "type": "array",
+            "description": "Per-section verdict",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "description": "Section ID (e.g., A1, C2)" },
+                "verdict": {
+                  "type": "string",
+                  "enum": ["ACCEPT", "APPROVE_WITH_NOTES", "REVISE", "REJECT"]
+                },
+                "reason": { "type": "string", "description": "Why this verdict" },
+                "suggestions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["DEEPEN", "SIMPLIFY", "SPLIT", "MERGE", "CORRECT", "RESTRUCTURE"]
+                  }
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Optional notes for APPROVE_WITH_NOTES"
+                }
+              },
+              "required": ["id", "verdict", "reason"]
+            }
+          }
+        },
+        "required": ["summary", "sectionReviews"]
+      },
+      "prompt": {
+        "system": "You are a COHERENCE VALIDATOR for a document draft. Your job is to evaluate logical flow, consistency, and structural quality.\n\n## YOUR ROLE — LOGICAL FLOW AND CONSISTENCY ONLY\n\nYou evaluate:\n1. **Logical flow** — Do sections follow a sensible order? Can you read the document top-to-bottom without confusion?\n2. **Redundancy** — Are any sections covering the same ground? Should they be merged?\n3. **Terminology consistency** — Same concept = same term throughout\n4. **Structural balance** — Is any section disproportionately detailed or shallow compared to its importance?\n5. **Cross-references** — When sections reference each other, are the references valid?\n\nYou do NOT verify factual accuracy (accuracy validator's job) or coverage completeness (completeness validator's job).\n\n## PER-SECTION REVIEW\n\nFor EACH section:\n\n1. **Flow check** — Does it follow naturally from the previous section?\n2. **Redundancy check** — Does it overlap significantly with another section?\n3. **Terminology check** — Does it use terms consistently with the rest of the document?\n4. **Balance check** — Is the detail level appropriate for the section's importance?\n\n## VERDICTS\n\n- **ACCEPT** — Section flows well, no consistency issues\n- **APPROVE_WITH_NOTES** — Minor flow/consistency issues, noted for human\n- **REVISE** — Significant flow or consistency problems (include suggestions)\n- **REJECT** — Section is in the wrong place or fundamentally conflicts with other sections\n\n## CALIBRATION\n\n- A document with multiple authors naturally has some style variation — only flag significant inconsistencies\n- Accept reasonable structural choices even if you'd organize differently\n- If you rejected before and the section has been revised, evaluate NEW content fairly\n\n## OUTPUT\n\nReturn ONLY the JSON schema. Be concise in reasons (max 150 chars each)."
+      },
+      "contextStrategy": {
+        "sources": [
+          {
+            "topic": "ISSUE_OPENED",
+            "priority": "required",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "DRAFT_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": "{{max_tokens}}"
+      },
+      "triggers": [
+        {
+          "topic": "DRAFT_READY",
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "transform": {
+            "engine": "javascript",
+            "script": "const reviews = result.sectionReviews || []; const approved = reviews.length > 0 && reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
+          }
+        },
+        "onError": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "Validator validator-coherence failed - auto-rejecting to force re-examination",
+              "data": {
+                "approved": false,
+                "summary": "VALIDATOR_ERROR: validator-coherence crashed and auto-rejected",
+                "sectionReviews": [],
+                "validatorError": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "validator-actionability",
+      "role": "validator",
+      "modelLevel": "level2",
+      "useDirectApi": true,
+      "maxRetries": 3,
+      "condition": "{{has_action_items}} == true && {{validator_count}} >= 2",
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "One-line validation result"
+          },
+          "sectionReviews": {
+            "type": "array",
+            "description": "Per-section verdict",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "description": "Section ID (e.g., A1, C2)" },
+                "verdict": {
+                  "type": "string",
+                  "enum": ["ACCEPT", "APPROVE_WITH_NOTES", "REVISE", "REJECT"]
+                },
+                "reason": { "type": "string", "description": "Why this verdict" },
+                "suggestions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["DEEPEN", "SIMPLIFY", "SPLIT", "MERGE", "CORRECT", "RESTRUCTURE"]
+                  }
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Optional notes for APPROVE_WITH_NOTES"
+                }
+              },
+              "required": ["id", "verdict", "reason"]
+            }
+          }
+        },
+        "required": ["summary", "sectionReviews"]
+      },
+      "prompt": {
+        "system": "You are an ACTIONABILITY VALIDATOR for a document draft. Your job is to verify that action items, tasks, and steps in the document are small, clear, and executable.\n\n## YOUR ROLE — ACTIONABILITY ONLY\n\nYou evaluate action-oriented sections (category: ACTION) for:\n1. **Atomicity** — Is each task small enough to do in one sitting without ambiguity?\n2. **Clarity** — Would someone know EXACTLY what to do without asking questions?\n3. **Executability** — Can the task actually be performed with the information given?\n4. **Done-state** — Is it clear when the task is complete?\n5. **Dependencies** — Are prerequisite tasks identified?\n\nFor non-action sections (INTRODUCTION, CONTEXT, REFERENCE, etc.): auto-ACCEPT them.\n\n## PER-SECTION REVIEW (ACTION sections only)\n\nFor EACH action section:\n\n1. **Task size check** — Could this be a single pull request or work session?\n2. **Ambiguity check** — Are there any words like \"appropriate\", \"properly\", \"as needed\" without definition?\n3. **Completeness check** — Does the task include enough context to start without external research?\n4. **Verification check** — Is there a clear way to verify the task is done?\n\n## VERDICTS\n\n- **ACCEPT** — Task is clear, atomic, and executable\n- **APPROVE_WITH_NOTES** — Mostly clear, minor suggestions for human\n- **REVISE** — Too vague, too large, or missing critical details (include SPLIT or DEEPEN suggestion)\n- **REJECT** — Not actionable — needs complete rewrite\n\n## CALIBRATION\n\n- Accept tasks that give enough information to get started, even if not perfect\n- SPLIT suggestion for tasks that are really 3+ tasks bundled together\n- DEEPEN suggestion for tasks missing key details (which file, which command, what value)\n- If you rejected before and the section has been revised, evaluate NEW content fairly\n\n## OUTPUT\n\nReturn ONLY the JSON schema. Be concise in reasons (max 150 chars each)."
+      },
+      "contextStrategy": {
+        "sources": [
+          {
+            "topic": "ISSUE_OPENED",
+            "priority": "required",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "DRAFT_READY",
+            "priority": "high",
+            "since": "last_agent_start",
+            "strategy": "latest",
+            "amount": 1
+          }
+        ],
+        "format": "chronological",
+        "maxTokens": "{{max_tokens}}"
+      },
+      "triggers": [
+        {
+          "topic": "DRAFT_READY",
+          "action": "execute_task"
+        }
+      ],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "transform": {
+            "engine": "javascript",
+            "script": "const reviews = result.sectionReviews || []; const approved = reviews.length > 0 && reviews.every(r => r.verdict === 'ACCEPT' || r.verdict === 'APPROVE_WITH_NOTES'); return { topic: 'VALIDATION_RESULT', content: { text: result.summary || '', data: { approved, sectionReviews: reviews } } };"
+          }
+        },
+        "onError": {
+          "action": "publish_message",
+          "config": {
+            "topic": "VALIDATION_RESULT",
+            "content": {
+              "text": "Validator validator-actionability failed - auto-rejecting to force re-examination",
+              "data": {
+                "approved": false,
+                "summary": "VALIDATOR_ERROR: validator-actionability crashed and auto-rejected",
+                "sectionReviews": [],
+                "validatorError": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "revision-preparer",
+      "role": "orchestrator",
+      "triggers": [
+        {
+          "topic": "VALIDATION_RESULT",
+          "logic": {
+            "engine": "javascript",
+            "script": "const validators = cluster.getAgentsByRole('validator');\nconst validatorIds = new Set(validators.map(v => v.id));\nconst lastDraft = ledger.findLast({ topic: 'DRAFT_READY' });\nif (!lastDraft) return false;\nconst draftCount = ledger.count({ topic: 'DRAFT_READY', sender: 'drafter' });\nif (draftCount >= {{max_iterations}}) return false;\nconst responses = ledger.query({ topic: 'VALIDATION_RESULT', since: lastDraft.timestamp });\nconst latestByValidator = new Map();\nfor (const r of responses) {\n  if (!validatorIds.has(r.sender)) continue;\n  latestByValidator.set(r.sender, r);\n}\nif (latestByValidator.size < validators.length) return false;\nreturn [...latestByValidator.values()].some(r => {\n  const approved = r.content?.data?.approved;\n  return approved === false || approved === 'false';\n});"
+          },
+          "action": "execute_system_command",
+          "config": {
+            "command": "node $ZEROSHOT_ROOT/scripts/build-revision-context.js",
+            "timeout": 15000,
+            "onSuccess": {
+              "topic": "REVISION_CONTEXT",
+              "contentFromOutput": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "completion-detector",
+      "role": "orchestrator",
+      "triggers": [
+        {
+          "topic": "VALIDATION_RESULT",
+          "logic": {
+            "engine": "javascript",
+            "script": "const lastDraft = ledger.findLast({ topic: 'DRAFT_READY' });\nif (!lastDraft) return false;\nconst validators = cluster.getAgentsByRole('validator');\nconst validatorIds = new Set(validators.map(v => v.id));\nconst results = ledger.query({ topic: 'VALIDATION_RESULT', since: lastDraft.timestamp });\nconst latestByValidator = new Map();\nfor (const r of results) {\n  if (!validatorIds.has(r.sender)) continue;\n  latestByValidator.set(r.sender, r);\n}\nif (latestByValidator.size < validators.length) return false;\nconst allApproved = [...latestByValidator.values()].every(r => {\n  const approved = r.content?.data?.approved;\n  return approved === true || approved === 'true';\n});\nif (allApproved) return true;\nconst draftCount = ledger.count({ topic: 'DRAFT_READY', sender: 'drafter' });\nreturn draftCount >= {{max_iterations}};"
+          },
+          "action": "execute_system_command",
+          "config": {
+            "command": "node $ZEROSHOT_ROOT/scripts/assemble-doc.js",
+            "stopClusterAfter": true,
+            "timeout": 15000
+          }
+        }
+      ]
+    }
+  ]
+}
