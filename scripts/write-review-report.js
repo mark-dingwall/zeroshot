@@ -92,6 +92,37 @@ function formatStatistics(stats) {
   return lines.join('\n');
 }
 
+function formatValidatorNotes(notes) {
+  if (!notes || notes.length === 0) return '';
+  const lines = ['## Validator Notes\n'];
+  lines.push('_Observations from validators for human consideration:_\n');
+  for (const note of notes) {
+    const finding = note.findingId || '?';
+    const validator = note.validator || 'unknown';
+    lines.push(`- **${finding}** (${validator}): ${note.notes}`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+function formatSeverityAdjustments(adjustments) {
+  if (!adjustments || adjustments.length === 0) return '';
+  const lines = ['## Severity Adjustments\n'];
+  lines.push('_Findings where validators adjusted the severity:_\n');
+  lines.push('| Finding | Original | Adjusted | Validator | Reason |');
+  lines.push('|---------|----------|----------|-----------|--------|');
+  for (const adj of adjustments) {
+    const id = adj.findingId || '?';
+    const orig = adj.originalSeverity || '?';
+    const adjusted = adj.adjustedSeverity || '?';
+    const validator = adj.validator || '?';
+    const reason = adj.reason || '';
+    lines.push(`| ${id} | ${orig} | ${adjusted} | ${validator} | ${reason} |`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
 function buildReport(content) {
   const data = content.data || {};
   const finalReport =
@@ -121,6 +152,13 @@ function buildReport(content) {
   sections.push(formatFindings(finalReport.confirmedFindings, 'Confirmed Findings'));
   sections.push(formatFindings(finalReport.contestedFindings, 'Contested Findings'));
   sections.push(formatWithdrawn(finalReport.withdrawnFindings));
+
+  const notesSection = formatValidatorNotes(finalReport.validatorNotes);
+  if (notesSection) sections.push(notesSection);
+
+  const adjustmentsSection = formatSeverityAdjustments(finalReport.severityAdjustments);
+  if (adjustmentsSection) sections.push(adjustmentsSection);
+
   sections.push(formatStatistics(finalReport.statistics));
 
   return { markdown: sections.join('\n'), assessment, clusterId };
