@@ -380,16 +380,29 @@ async function executeTriggerAction(agent, trigger, message) {
     }
 
     if (config.onSuccess) {
-      agent._publish({
-        topic: config.onSuccess.topic,
-        content: {
+      let content;
+      if (config.onSuccess.contentFromOutput) {
+        try {
+          content = JSON.parse((output || '').trim());
+        } catch {
+          content = {
+            text: `System command output (unparseable): ${config.command}`,
+            data: { output: (output || '').trim() },
+          };
+        }
+      } else {
+        content = {
           text: `System command passed: ${config.command}`,
           data: {
             command: config.command,
             exitCode: 0,
             output: truncate((output || '').trim(), 5000),
           },
-        },
+        };
+      }
+      agent._publish({
+        topic: config.onSuccess.topic,
+        content,
       });
       agent.state = 'idle';
       return;

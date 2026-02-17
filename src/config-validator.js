@@ -290,41 +290,72 @@ function ensureTopicList(map, topic) {
   return map.get(topic);
 }
 
+/**
+ * Collect topics produced via trigger.config.onSuccess for execute_system_command agents.
+ */
+function collectOnSuccessTopics(agent) {
+  const topics = [];
+  for (const trigger of agent.triggers || []) {
+    if (trigger.action === 'execute_system_command' && trigger.config?.onSuccess?.topic) {
+      topics.push(trigger.config.onSuccess.topic);
+    }
+  }
+  return topics;
+}
+
 function recordAgentTriggers(agent, topicConsumers, agentInputTopics) {
   for (const trigger of agent.triggers || []) {
     const topic = trigger.topic;
+    if (!topic) continue;
     ensureTopicList(topicConsumers, topic).push(agent.id);
     agentInputTopics.get(agent.id).push(topic);
   }
 }
 
 function recordAgentOutputs(agent, topicProducers, agentOutputTopics) {
+  // hooks.onComplete only fires for execute_task actions, not execute_system_command
+  const canFireOnComplete = agentExecutesTask(agent);
   const outputTopic = agent.hooks?.onComplete?.config?.topic;
-  if (outputTopic) {
+  if (outputTopic && canFireOnComplete) {
     ensureTopicList(topicProducers, outputTopic).push(agent.id);
     agentOutputTopics.get(agent.id).push(outputTopic);
   }
 
-  const hookLogicScript = agent.hooks?.onComplete?.logic?.script;
-  if (!hookLogicScript || typeof hookLogicScript !== 'string') {
-    return;
+  // Also check logic and transform scripts in onComplete (only if execute_task)
+  if (canFireOnComplete) {
+    // Scan both logic scripts and transform scripts for dynamic topic production
+    const scriptsToScan = [
+      agent.hooks?.onComplete?.logic?.script,
+      agent.hooks?.onComplete?.transform?.script,
+    ].filter((s) => s && typeof s === 'string');
+
+    for (const script of scriptsToScan) {
+      const topicMatches = script.match(/topic:\s*['"]([A-Z_]+)['"]/g) || [];
+      for (const match of topicMatches) {
+        const dynamicTopic = match.match(/['"]([A-Z_]+)['"]/)?.[1];
+        if (!dynamicTopic || dynamicTopic === outputTopic) {
+          continue;
+        }
+
+        const producers = ensureTopicList(topicProducers, dynamicTopic);
+        if (!producers.includes(agent.id)) {
+          producers.push(`${agent.id}*`);
+        }
+
+        const outputs = agentOutputTopics.get(agent.id);
+        if (!outputs.includes(dynamicTopic)) {
+          outputs.push(dynamicTopic);
+        }
+      }
+    }
   }
 
-  const topicMatches = hookLogicScript.match(/topic:\s*['"]([A-Z_]+)['"]/g) || [];
-  for (const match of topicMatches) {
-    const dynamicTopic = match.match(/['"]([A-Z_]+)['"]/)?.[1];
-    if (!dynamicTopic || dynamicTopic === outputTopic) {
-      continue;
-    }
-
-    const producers = ensureTopicList(topicProducers, dynamicTopic);
-    if (!producers.includes(agent.id)) {
-      producers.push(`${agent.id}*`);
-    }
-
+  // Register topics from trigger.config.onSuccess (for execute_system_command agents)
+  for (const successTopic of collectOnSuccessTopics(agent)) {
+    ensureTopicList(topicProducers, successTopic).push(agent.id);
     const outputs = agentOutputTopics.get(agent.id);
-    if (!outputs.includes(dynamicTopic)) {
-      outputs.push(dynamicTopic);
+    if (!outputs.includes(successTopic)) {
+      outputs.push(successTopic);
     }
   }
 }
@@ -497,9 +528,32 @@ function reportMissingValidationTriggers(config, errors) {
     return;
   }
 
+  // Build set of topics produced by orchestrators that trigger on VALIDATION_RESULT
+  // (mediated feedback loops: validator → VALIDATION_RESULT → orchestrator script → topic → worker)
+  const mediatedTopics = new Set();
+  for (const agent of config.agents) {
+    if (agent.role !== 'orchestrator') continue;
+    const triggersOnVR = agent.triggers?.some(
+      (t) => t.topic === 'VALIDATION_RESULT' || t.topic?.includes('VALIDATION')
+    );
+    if (!triggersOnVR) continue;
+    // Collect topics: onComplete hooks only fire for execute_task,
+    // onSuccess topics fire for execute_system_command
+    if (agentExecutesTask(agent)) {
+      const hookConfig = agent.hooks?.onComplete?.config;
+      if (hookConfig?.topic) mediatedTopics.add(hookConfig.topic);
+    }
+    for (const topic of collectOnSuccessTopics(agent)) {
+      mediatedTopics.add(topic);
+    }
+  }
+
   for (const worker of workers) {
     const triggersOnValidation = worker.triggers?.some(
-      (t) => t.topic === 'VALIDATION_RESULT' || t.topic.includes('VALIDATION')
+      (t) =>
+        t.topic === 'VALIDATION_RESULT' ||
+        t.topic?.includes('VALIDATION') ||
+        mediatedTopics.has(t.topic)
     );
     if (!triggersOnValidation) {
       errors.push(
@@ -567,7 +621,8 @@ function recordAgentRole(roles, agent) {
 }
 
 function agentExecutesTask(agent) {
-  return agent.triggers?.some((t) => t.action === 'execute_task' || (!t.action && !t.logic));
+  // Triggers without explicit action default to execute_task
+  return agent.triggers?.some((t) => !t.action || t.action === 'execute_task');
 }
 
 function validateOrchestratorTriggers(agent, warnings) {
@@ -1125,6 +1180,15 @@ function validateHookSemantics(config) {
 
       const prefix = `Agent '${agent.id}' hooks.${hookType}`;
 
+      // Warn if onComplete is defined but agent only uses execute_system_command
+      // (onComplete never fires for execute_system_command — use trigger.config.onSuccess instead)
+      if (hookType === 'onComplete' && !agentExecutesTask(agent)) {
+        warnings.push(
+          `${prefix}: hooks.onComplete will never fire because agent only uses ` +
+            `execute_system_command triggers. Use trigger.config.onSuccess instead.`
+        );
+      }
+
       // === GAP 1: Hook action field missing ===
       // Causes runtime crash at agent-hook-executor.js:66
       validateHookAction(hook, prefix, errors);
@@ -1339,17 +1403,27 @@ function buildAgentGraph(config) {
   const agentGraph = new Map();
   const topicProducers = new Map();
 
+  const registerTopic = (topic, agentId) => {
+    if (!topicProducers.has(topic)) {
+      topicProducers.set(topic, []);
+    }
+    topicProducers.get(topic).push(agentId);
+  };
+
   for (const agent of config.agents) {
     if (agent.type === 'subcluster') continue;
     agentGraph.set(agent.id, []);
 
-    const outputTopic = agent.hooks?.onComplete?.config?.topic;
-    if (!outputTopic) continue;
-
-    if (!topicProducers.has(outputTopic)) {
-      topicProducers.set(outputTopic, []);
+    // hooks.onComplete only fires for execute_task agents
+    if (agentExecutesTask(agent)) {
+      const outputTopic = agent.hooks?.onComplete?.config?.topic;
+      if (outputTopic) registerTopic(outputTopic, agent.id);
     }
-    topicProducers.get(outputTopic).push(agent.id);
+
+    // onSuccess topics from execute_system_command triggers
+    for (const topic of collectOnSuccessTopics(agent)) {
+      registerTopic(topic, agent.id);
+    }
   }
 
   for (const agent of config.agents) {
@@ -1463,13 +1537,25 @@ function buildTopicProducers(agents) {
 
   for (const agent of agents) {
     if (agent.type === 'subcluster') continue;
-    const outputTopic = agent.hooks?.onComplete?.config?.topic;
-    if (!outputTopic) continue;
 
-    if (!topicProducers.has(outputTopic)) {
-      topicProducers.set(outputTopic, []);
+    // hooks.onComplete only fires for execute_task agents
+    if (agentExecutesTask(agent)) {
+      const outputTopic = agent.hooks?.onComplete?.config?.topic;
+      if (outputTopic) {
+        if (!topicProducers.has(outputTopic)) {
+          topicProducers.set(outputTopic, []);
+        }
+        topicProducers.get(outputTopic).push(agent.id);
+      }
     }
-    topicProducers.get(outputTopic).push(agent.id);
+
+    // Register onSuccess topics from execute_system_command triggers
+    for (const topic of collectOnSuccessTopics(agent)) {
+      if (!topicProducers.has(topic)) {
+        topicProducers.set(topic, []);
+      }
+      topicProducers.get(topic).push(agent.id);
+    }
   }
 
   return topicProducers;
