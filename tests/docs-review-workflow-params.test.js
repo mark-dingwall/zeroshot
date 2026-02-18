@@ -439,6 +439,44 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
     });
   });
 
+  // --- Subagent batching & terseness ---
+
+  describe('Subagent batching and terseness', function () {
+    it('axiom prompt uses batched spawning, not single-message', function () {
+      const resolved = resolveWorkflow({
+        tier: 'axiom',
+        analyst_level: 'level3',
+        validator_count: 2,
+      });
+      const analyst = resolved.agents.find((a) => a.id === 'analyst');
+      assert.ok(
+        analyst.prompt.initial.includes('BATCHES of at most 4'),
+        'Axiom initial prompt should include batching guidance'
+      );
+      assert.ok(
+        !analyst.prompt.initial.includes('SINGLE message (up to 8'),
+        'Axiom initial prompt should NOT include single-message spawning'
+      );
+      assert.ok(
+        analyst.prompt.subsequent.includes('BATCHES of at most 4'),
+        'Axiom subsequent prompt should include batching guidance'
+      );
+      assert.ok(
+        !analyst.prompt.subsequent.includes('SINGLE message (parallel, up to 8'),
+        'Axiom subsequent prompt should NOT include single-message spawning'
+      );
+    });
+
+    it('subagent prompt template includes terseness guidance', function () {
+      const resolved = resolveWorkflow();
+      const analyst = resolved.agents.find((a) => a.id === 'analyst');
+      assert.ok(
+        analyst.prompt.initial.includes('high information density'),
+        'Subagent template should include terseness guidance'
+      );
+    });
+  });
+
   // --- Default params ---
 
   describe('Boolean param defaults', function () {

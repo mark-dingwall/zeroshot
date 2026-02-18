@@ -697,6 +697,14 @@ function buildSpawnEnv(agent, providerName, modelSpec) {
     );
   }
 
+  // Autocompact threshold: higher-level agents spawn more/larger subagents, need earlier compaction.
+  // CC REPL uses 83.5% (16.5% buffer). We use 90/87/84% for level1/2/3.
+  const autocompactByLevel = { level1: '90', level2: '87', level3: '84' };
+  const level = agent.config?.modelLevel;
+  if (level && autocompactByLevel[level] && !spawnEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) {
+    spawnEnv.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = autocompactByLevel[level];
+  }
+
   return spawnEnv;
 }
 

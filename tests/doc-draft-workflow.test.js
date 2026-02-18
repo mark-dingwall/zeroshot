@@ -318,6 +318,45 @@ describe('Doc Draft Workflow — Template Resolution', function () {
       assert.ok(drafter.prompt.initial.includes('5-8 perspectives'));
     });
 
+    it('prism prompt uses batched spawning, not single-message', function () {
+      const resolved = resolveWorkflow({
+        tier: 'prism',
+        drafter_level: 'level3',
+        validator_count: 3,
+      });
+      const drafter = resolved.agents.find((a) => a.id === 'drafter');
+      assert.ok(
+        drafter.prompt.initial.includes('BATCHES of at most 4'),
+        'Prism initial prompt should include batching guidance'
+      );
+      assert.ok(
+        !drafter.prompt.initial.includes('Spawn ALL in a SINGLE message'),
+        'Prism initial prompt should NOT include single-message spawning'
+      );
+    });
+
+    it('prism subsequent prompt includes batching guidance', function () {
+      const resolved = resolveWorkflow({
+        tier: 'prism',
+        drafter_level: 'level3',
+        validator_count: 3,
+      });
+      const drafter = resolved.agents.find((a) => a.id === 'drafter');
+      assert.ok(
+        drafter.prompt.subsequent.includes('at most 4 per message'),
+        'Prism subsequent prompt should include batching guidance for revisions'
+      );
+    });
+
+    it('subagent prompt template includes terseness guidance', function () {
+      const resolved = resolveWorkflow();
+      const drafter = resolved.agents.find((a) => a.id === 'drafter');
+      assert.ok(
+        drafter.prompt.initial.includes('high information density'),
+        'Subagent template should include terseness guidance'
+      );
+    });
+
     it('subsequent prompt references REVISION_CONTEXT', function () {
       const resolved = resolveWorkflow();
       const drafter = resolved.agents.find((a) => a.id === 'drafter');
