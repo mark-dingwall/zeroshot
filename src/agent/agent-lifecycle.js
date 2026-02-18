@@ -23,7 +23,7 @@ const {
 const { normalizeProviderName } = require('../../lib/provider-names');
 const { loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
-const { execSync } = require('../lib/safe-exec');
+const safeExec = require('../lib/safe-exec');
 const path = require('path');
 
 const DEFAULT_VALIDATOR_IMAGE = 'zeroshot-cluster-base';
@@ -332,7 +332,7 @@ async function executeTriggerAction(agent, trigger, message) {
 
     let output;
     try {
-      output = execSync(config.command, {
+      output = safeExec.execSync(config.command, {
         input: stdinData,
         encoding: 'utf-8',
         timeout: config.timeout || 30000,
