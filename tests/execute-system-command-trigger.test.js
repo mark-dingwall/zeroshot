@@ -4,6 +4,8 @@
 
 const assert = require('assert');
 const path = require('path');
+const sinon = require('sinon');
+const safeExec = require('../src/lib/safe-exec');
 const { executeTriggerAction } = require('../src/agent/agent-lifecycle');
 
 function createMockAgent(overrides = {}) {
@@ -69,51 +71,75 @@ describe('execute_system_command trigger action', function () {
     );
   });
 
-  it('should publish CLUSTER_COMPLETE when stopClusterAfter is true', async function () {
-    const agent = createMockAgent();
-    const trigger = {
-      action: 'execute_system_command',
-      config: {
-        command: 'echo ok',
-        stopClusterAfter: true,
-      },
-    };
-    const message = { content: { text: 'test' }, topic: 'TEST' };
+  describe('success-path state transitions (stubbed execSync)', function () {
+    let stub;
 
-    await executeTriggerAction(agent, trigger, message);
+    beforeEach(function () {
+      stub = sinon.stub(safeExec, 'execSync').returns('ok\n');
+    });
 
-    assert.strictEqual(agent.state, 'completed');
-    assert.strictEqual(agent.published.length, 1);
-    assert.strictEqual(agent.published[0].topic, 'CLUSTER_COMPLETE');
-    assert.strictEqual(agent.published[0].content.data.reason, 'system_command_complete');
-  });
+    afterEach(function () {
+      stub.restore();
+    });
 
-  it('should set agent state to idle when stopClusterAfter is absent', async function () {
-    const agent = createMockAgent();
-    const trigger = {
-      action: 'execute_system_command',
-      config: { command: 'echo ok' },
-    };
-    const message = { content: { text: 'test' }, topic: 'TEST' };
+    it('should publish CLUSTER_COMPLETE when stopClusterAfter is true', async function () {
+      const agent = createMockAgent();
+      const trigger = {
+        action: 'execute_system_command',
+        config: {
+          command: 'echo ok',
+          stopClusterAfter: true,
+        },
+      };
+      const message = { content: { text: 'test' }, topic: 'TEST' };
 
-    await executeTriggerAction(agent, trigger, message);
+      await executeTriggerAction(agent, trigger, message);
 
-    assert.strictEqual(agent.state, 'idle');
-    assert.strictEqual(agent.published.length, 0);
-  });
+      assert.strictEqual(agent.state, 'completed');
+      assert.strictEqual(agent.published.length, 1);
+      assert.strictEqual(agent.published[0].topic, 'CLUSTER_COMPLETE');
+      assert.strictEqual(agent.published[0].content.data.reason, 'system_command_complete');
+    });
 
-  it('should set agent state to idle when stopClusterAfter is false', async function () {
-    const agent = createMockAgent();
-    const trigger = {
-      action: 'execute_system_command',
-      config: { command: 'echo ok', stopClusterAfter: false },
-    };
-    const message = { content: { text: 'test' }, topic: 'TEST' };
+    it('should set agent state to idle when stopClusterAfter is absent', async function () {
+      const agent = createMockAgent();
+      const trigger = {
+        action: 'execute_system_command',
+        config: { command: 'echo ok' },
+      };
+      const message = { content: { text: 'test' }, topic: 'TEST' };
 
-    await executeTriggerAction(agent, trigger, message);
+      await executeTriggerAction(agent, trigger, message);
 
-    assert.strictEqual(agent.state, 'idle');
-    assert.strictEqual(agent.published.length, 0);
+      assert.strictEqual(agent.state, 'idle');
+      assert.strictEqual(agent.published.length, 0);
+    });
+
+    it('should set agent state to idle when stopClusterAfter is false', async function () {
+      const agent = createMockAgent();
+      const trigger = {
+        action: 'execute_system_command',
+        config: { command: 'echo ok', stopClusterAfter: false },
+      };
+      const message = { content: { text: 'test' }, topic: 'TEST' };
+
+      await executeTriggerAction(agent, trigger, message);
+
+      assert.strictEqual(agent.state, 'idle');
+      assert.strictEqual(agent.published.length, 0);
+    });
+
+    it('should handle empty stdin when message has no content', async function () {
+      const agent = createMockAgent();
+      const trigger = {
+        action: 'execute_system_command',
+        config: { command: 'echo ok' },
+      };
+      const message = { topic: 'TEST' };
+
+      await executeTriggerAction(agent, trigger, message);
+      assert.strictEqual(agent.state, 'idle');
+    });
   });
 
   it('should throw on missing config.command', async function () {
@@ -185,18 +211,6 @@ describe('execute_system_command trigger action', function () {
     assert.strictEqual(agent.state, 'failed');
     const failMsg = agent.published.find((m) => m.topic === 'CLUSTER_FAILED');
     assert.ok(failMsg, 'Should publish CLUSTER_FAILED on timeout');
-  });
-
-  it('should handle empty stdin when message has no content', async function () {
-    const agent = createMockAgent();
-    const trigger = {
-      action: 'execute_system_command',
-      config: { command: 'echo ok' },
-    };
-    const message = { topic: 'TEST' };
-
-    await executeTriggerAction(agent, trigger, message);
-    assert.strictEqual(agent.state, 'idle');
   });
 
   it('should use agent.cwd as working directory', async function () {

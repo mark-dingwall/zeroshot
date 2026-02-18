@@ -8,7 +8,9 @@ const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const sinon = require('sinon');
 const { execSync } = require('child_process');
+const safeExec = require('../src/lib/safe-exec');
 const { executeTriggerAction } = require('../src/agent/agent-lifecycle');
 
 function createMockAgent(overrides = {}) {
@@ -29,25 +31,72 @@ function createMockAgent(overrides = {}) {
 }
 
 describe('execute_system_command onSuccess/onFailure', function () {
-  it('should publish to onSuccess.topic when command succeeds', async function () {
-    const agent = createMockAgent();
-    const trigger = {
-      action: 'execute_system_command',
-      config: {
-        command: 'echo "all tests passed"',
-        onSuccess: { topic: 'QUALITY_GATE_PASSED' },
-        onFailure: { topic: 'QUALITY_GATE_FAILED' },
-      },
-    };
-    const message = { content: { text: 'test' }, topic: 'IMPLEMENTATION_READY' };
+  describe('success-path routing (stubbed execSync)', function () {
+    let stub;
 
-    await executeTriggerAction(agent, trigger, message);
+    beforeEach(function () {
+      stub = sinon.stub(safeExec, 'execSync').returns('all tests passed\n');
+    });
 
-    assert.strictEqual(agent.state, 'idle');
-    assert.strictEqual(agent.published.length, 1);
-    assert.strictEqual(agent.published[0].topic, 'QUALITY_GATE_PASSED');
-    assert.strictEqual(agent.published[0].content.data.exitCode, 0);
-    assert.ok(agent.published[0].content.data.output.includes('all tests passed'));
+    afterEach(function () {
+      stub.restore();
+    });
+
+    it('should publish to onSuccess.topic when command succeeds', async function () {
+      const agent = createMockAgent();
+      const trigger = {
+        action: 'execute_system_command',
+        config: {
+          command: 'echo "all tests passed"',
+          onSuccess: { topic: 'QUALITY_GATE_PASSED' },
+          onFailure: { topic: 'QUALITY_GATE_FAILED' },
+        },
+      };
+      const message = { content: { text: 'test' }, topic: 'IMPLEMENTATION_READY' };
+
+      await executeTriggerAction(agent, trigger, message);
+
+      assert.strictEqual(agent.state, 'idle');
+      assert.strictEqual(agent.published.length, 1);
+      assert.strictEqual(agent.published[0].topic, 'QUALITY_GATE_PASSED');
+      assert.strictEqual(agent.published[0].content.data.exitCode, 0);
+      assert.ok(agent.published[0].content.data.output.includes('all tests passed'));
+    });
+
+    it('should work with onSuccess only (no onFailure)', async function () {
+      const agent = createMockAgent();
+      const trigger = {
+        action: 'execute_system_command',
+        config: {
+          command: 'echo ok',
+          onSuccess: { topic: 'CUSTOM_PASSED' },
+        },
+      };
+      const message = { content: { text: 'test' }, topic: 'TEST' };
+
+      await executeTriggerAction(agent, trigger, message);
+
+      assert.strictEqual(agent.state, 'idle');
+      assert.strictEqual(agent.published[0].topic, 'CUSTOM_PASSED');
+    });
+
+    it('should work with onFailure only (no onSuccess)', async function () {
+      const agent = createMockAgent();
+      const trigger = {
+        action: 'execute_system_command',
+        config: {
+          command: 'echo ok',
+          onFailure: { topic: 'CUSTOM_FAILED' },
+        },
+      };
+      const message = { content: { text: 'test' }, topic: 'TEST' };
+
+      await executeTriggerAction(agent, trigger, message);
+
+      // Command succeeded, no onSuccess configured, falls through to default behavior
+      assert.strictEqual(agent.state, 'idle');
+      assert.strictEqual(agent.published.length, 0);
+    });
   });
 
   it('should publish to onFailure.topic when command fails', async function () {
@@ -157,41 +206,6 @@ describe('execute_system_command onSuccess/onFailure', function () {
     await executeTriggerAction(agent, trigger, message);
 
     assert.strictEqual(agent.published[0].content.data.command, 'echo fail; exit 1');
-  });
-
-  it('should work with onSuccess only (no onFailure)', async function () {
-    const agent = createMockAgent();
-    const trigger = {
-      action: 'execute_system_command',
-      config: {
-        command: 'echo ok',
-        onSuccess: { topic: 'CUSTOM_PASSED' },
-      },
-    };
-    const message = { content: { text: 'test' }, topic: 'TEST' };
-
-    await executeTriggerAction(agent, trigger, message);
-
-    assert.strictEqual(agent.state, 'idle');
-    assert.strictEqual(agent.published[0].topic, 'CUSTOM_PASSED');
-  });
-
-  it('should work with onFailure only (no onSuccess)', async function () {
-    const agent = createMockAgent();
-    const trigger = {
-      action: 'execute_system_command',
-      config: {
-        command: 'echo ok',
-        onFailure: { topic: 'CUSTOM_FAILED' },
-      },
-    };
-    const message = { content: { text: 'test' }, topic: 'TEST' };
-
-    await executeTriggerAction(agent, trigger, message);
-
-    // Command succeeded, no onSuccess configured, falls through to default behavior
-    assert.strictEqual(agent.state, 'idle');
-    assert.strictEqual(agent.published.length, 0);
   });
 });
 
