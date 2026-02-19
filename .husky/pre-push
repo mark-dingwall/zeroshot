@@ -52,3 +52,20 @@ fi
 # ============================================================================
 
 npm run lint && npm run typecheck
+
+# ============================================================================
+# PART 4: Sync .audit-ignore to GitHub Actions secret
+# ============================================================================
+
+AUDIT_IGNORE_FILE="$(git rev-parse --show-toplevel)/.audit-ignore"
+if [ -f "$AUDIT_IGNORE_FILE" ] && command -v gh >/dev/null 2>&1; then
+  CONTENT=$(grep -v '^\s*#' "$AUDIT_IGNORE_FILE" | sed 's/#.*//' | tr -s '[:space:]' '\n' | grep -E '^GHSA-' || true)
+  if [ -n "$CONTENT" ]; then
+    REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+    if [ -n "$REPO" ]; then
+      echo "$CONTENT" | gh secret set AUDIT_IGNORE --repo "$REPO" --body - 2>/dev/null && \
+        echo "Synced .audit-ignore → AUDIT_IGNORE secret" || \
+        echo "Warning: could not sync .audit-ignore (missing repo permissions?)"
+    fi
+  fi
+fi

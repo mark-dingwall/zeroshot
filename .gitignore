@@ -53,6 +53,9 @@ report/
 # Turbo
 .turbo/
 *.cast
+# Security audit exclusions (synced to Actions secret by pre-push hook)
+.audit-ignore
+
 # Generated/temp files
 test-metadata-manual.sh
 test-isolated-fix.js
