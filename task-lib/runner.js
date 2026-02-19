@@ -15,8 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export async function spawnTask(prompt, options = {}) {
   ensureDirs();
 
-  const id = generateId();
-  const logFile = join(LOGS_DIR, `${id}.log`);
+  let id;
   const cwd = options.cwd || process.cwd();
 
   const settings = loadSettings();
@@ -40,17 +39,31 @@ export async function spawnTask(prompt, options = {}) {
   });
 
   const finalArgs = resolveFinalArgs(commandSpec, providerName, options);
-  const task = buildTaskRecord({
-    id,
-    prompt,
-    cwd,
-    options,
-    logFile,
-    providerName,
-    modelSpec,
-  });
 
-  addTask(task);
+  // Retry with new ID on collision (birthday paradox with accumulated tasks)
+  const MAX_ID_RETRIES = 5;
+  let task;
+  for (let attempt = 0; attempt < MAX_ID_RETRIES; attempt++) {
+    id = generateId();
+    task = buildTaskRecord({
+      id,
+      prompt,
+      cwd,
+      options,
+      logFile: join(LOGS_DIR, `${id}.log`),
+      providerName,
+      modelSpec,
+    });
+    try {
+      addTask(task);
+      break;
+    } catch (err) {
+      if (err.message?.includes('UNIQUE constraint failed') && attempt < MAX_ID_RETRIES - 1) {
+        continue;
+      }
+      throw err;
+    }
+  }
 
   const watcherConfig = buildWatcherConfig(
     outputFormat,
@@ -64,7 +77,7 @@ export async function spawnTask(prompt, options = {}) {
     watcherScript,
     id,
     cwd,
-    logFile,
+    logFile: task.logFile,
     finalArgs,
     watcherConfig,
   });
