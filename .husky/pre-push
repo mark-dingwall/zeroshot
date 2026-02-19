@@ -54,16 +54,48 @@ fi
 npm run lint && npm run typecheck
 
 # ============================================================================
-# PART 4: Sync .audit-ignore to GitHub Actions secret
+# PART 4: Check .audit-ignore staleness (>30 days = blocked)
 # ============================================================================
 
 AUDIT_IGNORE_FILE="$(git rev-parse --show-toplevel)/.audit-ignore"
+if [ -f "$AUDIT_IGNORE_FILE" ]; then
+  REVIEWED=$(grep -oP '(?<=^# Last reviewed: )\d{4}-\d{2}-\d{2}' "$AUDIT_IGNORE_FILE" || true)
+  if [ -n "$REVIEWED" ]; then
+    REVIEWED_EPOCH=$(date -d "$REVIEWED" +%s 2>/dev/null || true)
+    NOW_EPOCH=$(date +%s)
+    if [ -n "$REVIEWED_EPOCH" ]; then
+      DAYS_OLD=$(( (NOW_EPOCH - REVIEWED_EPOCH) / 86400 ))
+      if [ "$DAYS_OLD" -gt 30 ]; then
+        TODAY=$(date +%Y-%m-%d)
+        echo ""
+        echo "╔═══════════════════════════════════════════════════════════════════════╗"
+        echo "║                                                                       ║"
+        echo "║  BLOCKED: .audit-ignore is $DAYS_OLD days stale                       ║"
+        echo "║  Last reviewed: $REVIEWED                                             ║"
+        echo "║                                                                       ║"
+        echo "║  1. Run: npm audit --omit=dev                                         ║"
+        echo "║  2. Remove fixed advisories from .audit-ignore                        ║"
+        echo "║  3. Update the review date:                                           ║"
+        echo "║     sed -i 's/Last reviewed:.*/Last reviewed: $TODAY/' .audit-ignore  ║"
+        echo "║                                                                       ║"
+        echo "╚═══════════════════════════════════════════════════════════════════════╝"
+        echo ""
+        exit 1
+      fi
+    fi
+  fi
+fi
+
+# ============================================================================
+# PART 5: Sync .audit-ignore to GitHub Actions secret
+# ============================================================================
+
 if [ -f "$AUDIT_IGNORE_FILE" ] && command -v gh >/dev/null 2>&1; then
   CONTENT=$(grep -v '^\s*#' "$AUDIT_IGNORE_FILE" | sed 's/#.*//' | tr -s '[:space:]' '\n' | grep -E '^GHSA-' || true)
   if [ -n "$CONTENT" ]; then
     REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
     if [ -n "$REPO" ]; then
-      echo "$CONTENT" | gh secret set AUDIT_IGNORE --repo "$REPO" --body - 2>/dev/null && \
+      echo "$CONTENT" | gh secret set AUDIT_IGNORE --repo "$REPO" 2>/dev/null && \
         echo "Synced .audit-ignore → AUDIT_IGNORE secret" || \
         echo "Warning: could not sync .audit-ignore (missing repo permissions?)"
     fi
