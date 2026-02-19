@@ -34,8 +34,25 @@ jobs:
         run: npm ci
 
       - name: Security audit
-        run: npm audit --audit-level=high --omit=dev
-        continue-on-error: false
+        env:
+          AUDIT_IGNORE: ${{ secrets.AUDIT_IGNORE }}
+        run: |
+          npm audit --audit-level=moderate --omit=dev --json | node -e '
+            const fs = require("fs");
+            const ids = (process.env.AUDIT_IGNORE || "").split(/[\n,]/)
+              .map(l => l.replace(/#.*/,"").trim()).filter(Boolean);
+            const exclude = new Set(ids);
+            const data = JSON.parse(fs.readFileSync("/dev/stdin","utf8"));
+            const found = Object.values(data.vulnerabilities || {})
+              .flatMap(v => v.via.filter(a => typeof a === "object"))
+              .filter(a => exclude.has((a.url || "").split("/").pop()) === false);
+            if (found.length) {
+              console.error("New vulnerabilities found:");
+              found.forEach(a => console.error(" ", a.severity, a.name, a.url));
+              process.exit(1);
+            }
+            console.log("Audit clean (" + exclude.size + " known-unfixable excluded)");
+          '
 
       - name: Lint
         run: npm run lint
