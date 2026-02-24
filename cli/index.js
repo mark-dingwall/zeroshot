@@ -245,7 +245,7 @@ function resolveProviderOverride(options) {
   return normalizeProviderName(override);
 }
 
-function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
+async function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
   // Detect which issue provider tool is needed
   let issueProvider = null;
   let targetHost = null;
@@ -278,6 +278,17 @@ function runClusterPreflight({ input, options, providerOverride, settings, force
     issueProvider, // Pass detected issue provider for tool checking
     targetHost, // Pass target host for multi-instance auth checks (e.g., GitLab self-hosted)
   });
+
+  // Auto-detect quality gate (stores in ~/.zeroshot/projects/, not in user project)
+  if (!options.skipQualityGate && settings.autoQualitySetup !== false) {
+    const { ensureQualityConfig } = require('../lib/quality-detection');
+    const targetCwd = process.env.ZEROSHOT_CWD || detectGitRepoRoot();
+    const result = await ensureQualityConfig(targetCwd);
+    if (result.created && process.env.ZEROSHOT_DAEMON !== '1') {
+      console.log(`✓ Quality gate configured: ${result.command}`);
+      console.log('  Edit ~/.zeroshot/projects/ config, or skip with --skip-quality-gate');
+    }
+  }
 }
 
 function shouldRunDetached(options) {
@@ -2447,7 +2458,7 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps)
       const providerOverride = resolveProviderOverride(options);
 
       // Preflight checks
-      runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
+      await runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
 
       const { generateName } = require('../src/name-generator');
 

@@ -212,19 +212,29 @@ describe('execute_system_command onSuccess/onFailure', function () {
 describe('quality-gate-runner.js', function () {
   const runnerPath = path.join(__dirname, '..', 'scripts', 'quality-gate-runner.js');
   let tmpDir;
+  let projectsDir;
+  let originalProjectsDir;
 
   beforeEach(function () {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qg-test-'));
+    projectsDir = path.join(tmpDir, 'zs-projects');
+    originalProjectsDir = process.env.ZEROSHOT_PROJECTS_DIR;
   });
 
   afterEach(function () {
+    if (originalProjectsDir === undefined) {
+      delete process.env.ZEROSHOT_PROJECTS_DIR;
+    } else {
+      process.env.ZEROSHOT_PROJECTS_DIR = originalProjectsDir;
+    }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('should auto-pass when .zeroshot-quality is missing', function () {
+  it('should auto-pass when no .zeroshot-quality and no project config', function () {
     const output = execSync(`node ${runnerPath}`, {
       cwd: tmpDir,
       encoding: 'utf-8',
+      env: { ...process.env, ZEROSHOT_PROJECTS_DIR: projectsDir },
     });
 
     const result = JSON.parse(output.trim());
@@ -233,24 +243,12 @@ describe('quality-gate-runner.js', function () {
     assert.ok(result.stdout.includes('auto-passed'));
   });
 
-  it('should auto-pass when .zeroshot-quality is empty', function () {
-    fs.writeFileSync(path.join(tmpDir, '.zeroshot-quality'), '');
-    const output = execSync(`node ${runnerPath}`, {
-      cwd: tmpDir,
-      encoding: 'utf-8',
-    });
-
-    const result = JSON.parse(output.trim());
-    assert.strictEqual(result.exitCode, 0);
-    assert.strictEqual(result.command, null);
-    assert.ok(result.stdout.includes('empty'));
-  });
-
-  it('should run command and exit 0 on success', function () {
+  it('should run command from .zeroshot-quality (manual override)', function () {
     fs.writeFileSync(path.join(tmpDir, '.zeroshot-quality'), 'echo "checks passed"');
     const output = execSync(`node ${runnerPath}`, {
       cwd: tmpDir,
       encoding: 'utf-8',
+      env: { ...process.env, ZEROSHOT_PROJECTS_DIR: projectsDir },
     });
 
     const result = JSON.parse(output.trim());
@@ -259,7 +257,108 @@ describe('quality-gate-runner.js', function () {
     assert.ok(result.stdout.includes('checks passed'));
   });
 
-  it('should run command and exit non-zero on failure', function () {
+  it('should run command from project config', function () {
+    // Set up project config
+    process.env.ZEROSHOT_PROJECTS_DIR = projectsDir;
+    delete require.cache[require.resolve('../lib/project-config')];
+    const { saveProjectConfig } = require('../lib/project-config');
+    saveProjectConfig(tmpDir, {
+      qualityCommand: 'echo "from project config"',
+      source: 'heuristic',
+      ecosystems: ['node'],
+    });
+
+    const output = execSync(`node ${runnerPath}`, {
+      cwd: tmpDir,
+      encoding: 'utf-8',
+      env: { ...process.env, ZEROSHOT_PROJECTS_DIR: projectsDir },
+    });
+
+    const result = JSON.parse(output.trim());
+    assert.strictEqual(result.exitCode, 0);
+    assert.strictEqual(result.command, 'echo "from project config"');
+  });
+
+  it('should prefer .zeroshot-quality over project config', function () {
+    fs.writeFileSync(path.join(tmpDir, '.zeroshot-quality'), 'echo "manual override"');
+
+    // Also set up project config
+    process.env.ZEROSHOT_PROJECTS_DIR = projectsDir;
+    delete require.cache[require.resolve('../lib/project-config')];
+    const { saveProjectConfig } = require('../lib/project-config');
+    saveProjectConfig(tmpDir, {
+      qualityCommand: 'echo "project config"',
+      source: 'heuristic',
+      ecosystems: ['node'],
+    });
+
+    const output = execSync(`node ${runnerPath}`, {
+      cwd: tmpDir,
+      encoding: 'utf-8',
+      env: { ...process.env, ZEROSHOT_PROJECTS_DIR: projectsDir },
+    });
+
+    const result = JSON.parse(output.trim());
+    assert.strictEqual(result.command, 'echo "manual override"');
+  });
+
+  it('should flag heuristic source as heuristic-failed on command failure', function () {
+    process.env.ZEROSHOT_PROJECTS_DIR = projectsDir;
+    delete require.cache[require.resolve('../lib/project-config')];
+    const { saveProjectConfig } = require('../lib/project-config');
+    saveProjectConfig(tmpDir, {
+      qualityCommand: 'exit 1',
+      source: 'heuristic',
+      ecosystems: ['node'],
+    });
+
+    try {
+      execSync(`node ${runnerPath}`, {
+        cwd: tmpDir,
+        encoding: 'utf-8',
+        env: { ...process.env, ZEROSHOT_PROJECTS_DIR: projectsDir },
+      });
+      assert.fail('Should have thrown');
+    } catch (error) {
+      assert.ok(error.status > 0);
+    }
+
+    // Verify source updated to heuristic-failed
+    delete require.cache[require.resolve('../lib/project-config')];
+    const { loadProjectConfig: reload } = require('../lib/project-config');
+    const config = reload(tmpDir);
+    assert.strictEqual(config.source, 'heuristic-failed');
+  });
+
+  it('should NOT flag llm source on command failure', function () {
+    process.env.ZEROSHOT_PROJECTS_DIR = projectsDir;
+    delete require.cache[require.resolve('../lib/project-config')];
+    const { saveProjectConfig } = require('../lib/project-config');
+    saveProjectConfig(tmpDir, {
+      qualityCommand: 'exit 1',
+      source: 'llm',
+      ecosystems: [],
+    });
+
+    try {
+      execSync(`node ${runnerPath}`, {
+        cwd: tmpDir,
+        encoding: 'utf-8',
+        env: { ...process.env, ZEROSHOT_PROJECTS_DIR: projectsDir },
+      });
+      assert.fail('Should have thrown');
+    } catch (error) {
+      assert.ok(error.status > 0);
+    }
+
+    // Verify source unchanged
+    delete require.cache[require.resolve('../lib/project-config')];
+    const { loadProjectConfig: reload } = require('../lib/project-config');
+    const config = reload(tmpDir);
+    assert.strictEqual(config.source, 'llm');
+  });
+
+  it('should run command from .zeroshot-quality and exit non-zero on failure', function () {
     fs.writeFileSync(path.join(tmpDir, '.zeroshot-quality'), 'echo "test failed" >&2; exit 1');
 
     let output;
@@ -267,6 +366,7 @@ describe('quality-gate-runner.js', function () {
       execSync(`node ${runnerPath}`, {
         cwd: tmpDir,
         encoding: 'utf-8',
+        env: { ...process.env, ZEROSHOT_PROJECTS_DIR: projectsDir },
       });
       assert.fail('Should have thrown');
     } catch (error) {
@@ -290,6 +390,7 @@ describe('quality-gate-runner.js', function () {
       execSync(`node ${runnerPath}`, {
         cwd: tmpDir,
         encoding: 'utf-8',
+        env: { ...process.env, ZEROSHOT_PROJECTS_DIR: projectsDir },
       });
       assert.fail('Should have thrown');
     } catch (error) {
@@ -487,9 +588,11 @@ describe('execute_system_command timeout and error handling', function () {
 describe('quality-gate-runner.js error handling', function () {
   const runnerPath = path.join(__dirname, '..', 'scripts', 'quality-gate-runner.js');
   let tmpDir;
+  let projectsDir;
 
   beforeEach(function () {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qg-test-'));
+    projectsDir = path.join(tmpDir, 'zs-projects');
   });
 
   afterEach(function () {
@@ -504,6 +607,7 @@ describe('quality-gate-runner.js error handling', function () {
       execSync(`node ${runnerPath}`, {
         cwd: tmpDir,
         encoding: 'utf-8',
+        env: { ...process.env, ZEROSHOT_PROJECTS_DIR: projectsDir },
       });
       assert.fail('Should have thrown');
     } catch (error) {
