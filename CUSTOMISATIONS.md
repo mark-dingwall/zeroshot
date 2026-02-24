@@ -87,7 +87,7 @@ Worker done → IMPLEMENTATION_READY → quality-gate → pass → QUALITY_GATE_
 
 **Code review variant:** quality gate runs on `ISSUE_OPENED` (before analysis). Failure aborts the review immediately via `quality-gate-stopper` — no LLM tokens spent.
 
-**Setup:** `scripts/zeroshot-init.sh /path/to/repo` (AI-assisted or heuristic fallback). **Skip:** `--skip-quality-gate` CLI flag (generic `paramOverrides` mechanism in `cli/index.js` + `src/orchestrator.js`).
+**Setup:** Auto-detected on first `zeroshot run` (heuristic with LLM fallback, stored in `~/.zeroshot/projects/`). **Skip:** `--skip-quality-gate` CLI flag (generic `paramOverrides` mechanism in `cli/index.js` + `src/orchestrator.js`).
 
 ### Other
 
