@@ -38,6 +38,7 @@ const SubClusterWrapper = require('./sub-cluster-wrapper');
 const MessageBus = require('./message-bus');
 const Ledger = require('./ledger');
 const InputHelpers = require('./input-helpers');
+const { USER_GUIDANCE_AGENT, USER_GUIDANCE_CLUSTER } = require('./guidance-topics');
 const { detectProvider } = require('./issue-providers');
 const IsolationManager = require('./isolation-manager');
 const { generateName } = require('./name-generator');
@@ -45,6 +46,7 @@ const configValidator = require('./config-validator');
 const TemplateResolver = require('./template-resolver');
 const { loadSettings } = require('../lib/settings');
 const { normalizeProviderName } = require('../lib/provider-names');
+const { getProvider } = require('./providers');
 const StateSnapshotter = require('./state-snapshotter');
 const crypto = require('crypto');
 
@@ -130,6 +132,38 @@ class Orchestrator {
     if (!this.quiet) {
       console.log(...args);
     }
+  }
+
+  /**
+   * Resolve provider for a cluster config using the standard precedence.
+   * @param {Object} clusterConfig
+   * @param {Object} settings
+   * @returns {string}
+   * @private
+   */
+  _resolveClusterProvider(clusterConfig = {}, settings = loadSettings()) {
+    const resolved =
+      clusterConfig.forceProvider ||
+      clusterConfig.defaultProvider ||
+      settings.defaultProvider ||
+      'claude';
+    return normalizeProviderName(resolved) || 'claude';
+  }
+
+  /**
+   * Resolve the model level for internal completion agents.
+   * Uses provider minLevel when configured, otherwise provider default min level.
+   * @param {Object} clusterConfig
+   * @returns {string}
+   * @private
+   */
+  _resolveCompletionDetectorLevel(clusterConfig = {}) {
+    const settings = loadSettings();
+    const providerName = this._resolveClusterProvider(clusterConfig, settings);
+    const provider = getProvider(providerName);
+    const providerSettings = settings.providerSettings?.[providerName] || {};
+
+    return providerSettings.minLevel || provider.getDefaultMinLevel();
   }
 
   /**
@@ -271,31 +305,41 @@ class Orchestrator {
     // Restore isolation manager FIRST if cluster was running in isolation mode
     const { isolation, isolationManager } = this._restoreClusterIsolation(clusterId, clusterData);
 
+    // Create mutable cluster context for reload path (used by AgentWrapper/SubClusterWrapper)
+    const clusterContext = {
+      ...clusterData,
+      id: clusterId,
+      isolation,
+    };
+
     // Reconstruct agent metadata from config (processes are ephemeral)
     // CRITICAL: Pass isolation context to agents if cluster was running in isolation
     const agents = this._rebuildClusterAgents(
-      clusterId,
-      clusterData,
+      clusterContext,
       messageBus,
       isolation,
       isolationManager
     );
 
     const cluster = {
-      ...clusterData,
+      ...clusterContext,
       ledger,
       messageBus,
       agents,
       isolation,
       autoPr: clusterData.autoPr || false,
       paramOverrides: clusterData.paramOverrides || null,
+      prOptions: clusterData.prOptions || null,
+      issue: clusterData.issue || null,
     };
 
-    this.clusters.set(clusterId, cluster);
-    this._startSnapshotter(cluster);
+    Object.assign(clusterContext, cluster);
+
+    this.clusters.set(clusterId, clusterContext);
+    this._startSnapshotter(clusterContext);
     this._log(`[Orchestrator] Loaded cluster: ${clusterId} with ${agents.length} agents`);
 
-    return cluster;
+    return clusterContext;
   }
 
   _restoreClusterIsolation(clusterId, clusterData) {
@@ -349,12 +393,12 @@ class Orchestrator {
     return agentOptions;
   }
 
-  _instantiateAgent(agentConfig, messageBus, clusterId, agentOptions) {
+  _instantiateAgent(agentConfig, messageBus, clusterContext, agentOptions) {
     if (agentConfig.type === 'subcluster') {
-      return new SubClusterWrapper(agentConfig, messageBus, { id: clusterId }, agentOptions);
+      return new SubClusterWrapper(agentConfig, messageBus, clusterContext, agentOptions);
     }
 
-    return new AgentWrapper(agentConfig, messageBus, { id: clusterId }, agentOptions);
+    return new AgentWrapper(agentConfig, messageBus, clusterContext, agentOptions);
   }
 
   _restoreAgentState(agent, agentConfig, clusterData) {
@@ -370,8 +414,10 @@ class Orchestrator {
     agent.processPid = savedState.processPid || null;
   }
 
-  _rebuildClusterAgents(clusterId, clusterData, messageBus, isolation, isolationManager) {
+  _rebuildClusterAgents(clusterContext, messageBus, isolation, isolationManager) {
     const agents = [];
+    const clusterId = clusterContext.id;
+    const clusterData = clusterContext;
     const agentCwd = this._resolveAgentCwd(clusterData);
 
     if (!clusterData.config?.agents) {
@@ -394,7 +440,7 @@ class Orchestrator {
         isolation,
         isolationManager
       );
-      const agent = this._instantiateAgent(agentConfig, messageBus, clusterId, agentOptions);
+      const agent = this._instantiateAgent(agentConfig, messageBus, clusterContext, agentOptions);
       this._restoreAgentState(agent, agentConfig, clusterData);
       agents.push(agent);
     }
@@ -437,6 +483,51 @@ class Orchestrator {
       fs.writeFileSync(clustersFile, '{}');
     }
     return clustersFile;
+  }
+
+  /**
+   * Find active clusters for a given issue number
+   * Used to prevent duplicate runs on the same issue
+   * @param {number|string} issueNumber - Issue number to check
+   * @returns {Array<{id: string, state: string, createdAt: number}>} Active clusters for this issue
+   * @private
+   */
+  _getActiveClustersForIssue(issueNumber, excludeClusterId = null) {
+    const activeClusters = [];
+    const issueNum = Number(issueNumber);
+
+    for (const [clusterId, cluster] of this.clusters) {
+      if (excludeClusterId && clusterId === excludeClusterId) continue;
+      // Skip clusters without issue numbers
+      if (!cluster.issue) continue;
+
+      // Check if same issue number
+      if (Number(cluster.issue) !== issueNum) continue;
+
+      // Check if cluster is still active (not completed/failed/stopped)
+      const inactiveStates = ['completed', 'failed', 'stopped', 'corrupted'];
+      if (inactiveStates.includes(cluster.state)) continue;
+
+      // Check if process is still running (zombie detection)
+      if (cluster.pid) {
+        try {
+          // process.kill with signal 0 checks if process exists
+          process.kill(cluster.pid, 0);
+          // Process exists - cluster is active
+          activeClusters.push({
+            id: clusterId,
+            state: cluster.state,
+            createdAt: cluster.createdAt,
+            pid: cluster.pid,
+          });
+        } catch {
+          // Process doesn't exist - cluster is a zombie (stale entry)
+          // Don't include in active list
+        }
+      }
+    }
+
+    return activeClusters;
   }
 
   /**
@@ -514,10 +605,14 @@ class Orchestrator {
           failureInfo: cluster.failureInfo || null,
           // Persist PR mode for completion agent selection
           autoPr: cluster.autoPr || false,
+          // Persist PR options for resume
+          prOptions: cluster.prOptions || null,
           // Persist model override for consistent agent spawning on resume
           modelOverride: cluster.modelOverride || null,
           // Persist param overrides so resumed clusters apply same template params
           paramOverrides: cluster.paramOverrides || null,
+          // Persist issue number for heroshot/external tools
+          issue: cluster.issue || null,
           // Persist isolation info (excluding manager instance which can't be serialized)
           // CRITICAL: workDir is required for resume() to recreate container with same workspace
           isolation: cluster.isolation
@@ -674,18 +769,21 @@ class Orchestrator {
    * @returns {Object} Cluster object
    */
   start(config, input = {}, options = {}) {
+    const testMode = options.testMode || !!this.taskRunner;
+    const autoPr = options.autoPr ?? (testMode ? false : process.env.ZEROSHOT_PR === '1');
     return this._startInternal(config, input, {
-      testMode: false,
+      testMode,
       cwd: options.cwd || process.cwd(), // Target working directory for agents
       isolation: options.isolation || false,
       isolationImage: options.isolationImage,
       worktree: options.worktree || false,
-      autoPr: options.autoPr || process.env.ZEROSHOT_PR === '1',
+      autoPr,
       modelOverride: options.modelOverride, // Model override for all agents
       clusterId: options.clusterId, // Explicit ID from CLI/daemon parent
       settings: options.settings, // User settings for issue provider detection
       forceProvider: options.forceProvider, // Force specific issue provider
       paramOverrides: options.paramOverrides || null, // Template param overrides (e.g., skip quality gate)
+      force: options.force || false, // Skip duplicate issue check
     });
   }
 
@@ -738,6 +836,15 @@ class Orchestrator {
       initCompletePromise,
       _resolveInitComplete: resolveInitComplete,
       autoPr: options.autoPr || false,
+      // PR configuration options (persisted for resume)
+      prOptions:
+        options.prBase || options.mergeQueue || options.closeIssue
+          ? {
+              prBase: options.prBase || null,
+              mergeQueue: options.mergeQueue || false,
+              closeIssue: options.closeIssue || null,
+            }
+          : null,
       // Model override for all agents (applied to dynamically added agents)
       modelOverride: options.modelOverride || null,
       // Template param overrides (e.g., --skip-quality-gate → { quality_gate: false })
@@ -773,6 +880,13 @@ class Orchestrator {
     this.clusters.set(clusterId, cluster);
     this._startSnapshotter(cluster);
 
+    // Persist the cluster immediately so detached runs can't create "invisible" initializing clusters.
+    // Without this, an early startup failure (before ISSUE_OPENED / TASK_STARTED) may never be saved,
+    // and external supervisors (e.g., heroshot) can't detect/cleanup the stuck state.
+    await this._saveClusters().catch((err) => {
+      console.warn(`[Orchestrator] Failed to persist initial cluster state for ${clusterId}:`, err);
+    });
+
     try {
       // Fetch input (issue from provider, file, or text)
       let inputData;
@@ -792,6 +906,31 @@ class Orchestrator {
 
         // Store issue provider for logging/debugging and cross-provider workflows
         cluster.issueProvider = ProviderClass.id;
+
+        // Store issue number for heroshot/external tools (avoids log parsing)
+        cluster.issue = inputData.number || null;
+
+        // Persist issue number early so supervisors can associate this cluster with the issue even if start fails.
+        await this._saveClusters().catch((err) => {
+          console.warn(`[Orchestrator] Failed to persist issue number for ${clusterId}:`, err);
+        });
+
+        // Check for duplicate active runs on same issue (unless --force)
+        if (cluster.issue && !options.force) {
+          const activeClusters = this._getActiveClustersForIssue(cluster.issue, clusterId);
+          if (activeClusters.length > 0) {
+            const existing = activeClusters[0];
+            const age = Math.round((Date.now() - existing.createdAt) / 1000 / 60);
+            throw new Error(
+              `Issue #${cluster.issue} already has an active cluster:\n` +
+                `  Cluster: ${existing.id} (state: ${existing.state}, running for ${age}min, pid: ${existing.pid})\n\n` +
+                `Options:\n` +
+                `  1. Kill existing: zeroshot kill ${existing.id}\n` +
+                `  2. Override check: zeroshot run ${input.issue} --force\n` +
+                `  3. View status:    zeroshot status ${existing.id}`
+            );
+          }
+        }
 
         // Log clickable issue link
         if (inputData.url) {
@@ -925,6 +1064,58 @@ class Orchestrator {
       if (cluster._resolveInitComplete) {
         cluster._resolveInitComplete();
       }
+      // Persist the failure state (prevents "invisible" failures that supervisors can't detect/cleanup).
+      await this._saveClusters().catch((err) => {
+        console.warn(
+          `[Orchestrator] Failed to persist failed cluster state for ${clusterId}:`,
+          err
+        );
+      });
+
+      // Best-effort cleanup of partially initialized resources (prevents orphaned worktrees/containers).
+      try {
+        if (cluster.snapshotter) {
+          cluster.snapshotter.stop();
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        for (const agent of cluster.agents || []) {
+          // Agent start may have partially succeeded.
+          // Stop is best-effort and must not mask the original error.
+          // eslint-disable-next-line no-await-in-loop
+          await agent.stop();
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        if (cluster.isolation?.manager) {
+          // Preserve workspace for inspection; callers can `zeroshot kill` for full cleanup.
+          // eslint-disable-next-line no-await-in-loop
+          await cluster.isolation.manager.cleanup(clusterId, { preserveWorkspace: true });
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        if (cluster.worktree?.manager) {
+          cluster.worktree.manager.cleanupWorktreeIsolation(clusterId, { preserveBranch: true });
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        cluster.messageBus?.close?.();
+      } catch {
+        // ignore
+      }
+      try {
+        cluster.ledger?.close?.();
+      } catch {
+        // ignore
+      }
       console.error(`Cluster ${clusterId} failed to start:`, error);
       throw error;
     }
@@ -1026,16 +1217,27 @@ class Orchestrator {
     this._subscribeToClusterTopic(messageBus, clusterId, 'AGENT_ERROR', async (message) => {
       const agentRole = message.content?.data?.role;
       const attempts = message.content?.data?.attempts || 1;
+      const hookFailure = message.content?.data?.hookFailure === true;
 
       await this._saveClusters();
 
-      if (agentRole === 'implementation' && attempts >= 3) {
+      const shouldStopForRole =
+        agentRole === 'implementation' ||
+        agentRole === 'coordinator' ||
+        message.sender === 'consensus-coordinator';
+      const shouldStop = shouldStopForRole && (hookFailure || attempts >= 3);
+
+      if (shouldStop) {
         this._log(`\n${'='.repeat(80)}`);
-        this._log(`❌ WORKER AGENT FAILED: ${clusterId}`);
+        this._log(`❌ CRITICAL AGENT FAILED: ${clusterId}`);
         this._log(`${'='.repeat(80)}`);
-        this._log(`Worker agent ${message.sender} failed after ${attempts} attempts`);
+        this._log(
+          `${message.sender} (${agentRole || 'unknown role'}) failed` +
+            (hookFailure ? ` (hookFailure=true)` : ``) +
+            ` after ${attempts} attempts`
+        );
         this._log(`Error: ${message.content?.data?.error || 'unknown'}`);
-        this._log(`Stopping cluster - worker cannot continue`);
+        this._log(`Stopping cluster - critical agent cannot continue`);
         this._log(`${'='.repeat(80)}\n`);
 
         this.stop(clusterId).catch((err) => {
@@ -1240,9 +1442,7 @@ class Orchestrator {
       this._log(`[Orchestrator] Starting cluster in isolation mode (image: ${image})`);
 
       const workDir = options.cwd || process.cwd();
-      const providerName = normalizeProviderName(
-        config.forceProvider || config.defaultProvider || loadSettings().defaultProvider || 'claude'
-      );
+      const providerName = this._resolveClusterProvider(config);
       containerId = await isolationManager.createContainer(clusterId, {
         workDir,
         image,
@@ -1256,7 +1456,13 @@ class Orchestrator {
       const workDir = options.cwd || process.cwd();
 
       isolationManager = new IsolationManager({});
-      worktreeInfo = isolationManager.createWorktreeIsolation(clusterId, workDir);
+      // Use origin/${prBase} if prBase is set (ensures worktree is up-to-date with remote)
+      const worktreeOptions = {};
+      if (options.prBase) {
+        worktreeOptions.baseRef = `origin/${options.prBase}`;
+        this._log(`[Orchestrator] Using remote base ref: origin/${options.prBase}`);
+      }
+      worktreeInfo = isolationManager.createWorktreeIsolation(clusterId, workDir, worktreeOptions);
 
       this._log(`[Orchestrator] Starting cluster in worktree isolation mode`);
       this._log(`[Orchestrator] Worktree: ${worktreeInfo.path}`);
@@ -1317,7 +1523,11 @@ class Orchestrator {
       );
     }
 
-    const gitPusherConfig = generateGitPusherAgent(platform);
+    const gitPusherConfig = generateGitPusherAgent(platform, {
+      prBase: options.prBase,
+      mergeQueue: options.mergeQueue,
+      closeIssue: options.closeIssue,
+    });
 
     // Template replacement for issue context
     const issueRef = skipCloseIssue ? '' : `Closes #${inputData.number || 'unknown'}`;
@@ -1406,6 +1616,114 @@ class Orchestrator {
   }
 
   /**
+   * Wait for a process to exit
+   * @param {Number} pid - Process ID
+   * @param {Number} timeoutMs - Timeout in milliseconds
+   * @param {Number} intervalMs - Poll interval in milliseconds
+   * @returns {Promise<Boolean>} True if process exited
+   * @private
+   */
+  async _waitForProcessExit(pid, timeoutMs, intervalMs = 100) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!this._isProcessRunning(pid)) {
+        return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    return !this._isProcessRunning(pid);
+  }
+
+  /**
+   * Tear down Docker Compose services in a worktree directory to free host ports.
+   * Best-effort — silently ignores failures (compose may not have been started, Docker may not be running).
+   * @param {string} worktreePath - Path to the worktree directory
+   * @private
+   */
+  _teardownWorktreeCompose(worktreePath) {
+    const { execSync } = require('./lib/safe-exec');
+    const composePath = path.join(worktreePath, 'docker-compose.yml');
+    if (!fs.existsSync(composePath)) return;
+
+    try {
+      this._log(`[Orchestrator] Tearing down Docker Compose services in ${worktreePath}...`);
+      execSync('docker compose down --remove-orphans --volumes --timeout 10', {
+        cwd: worktreePath,
+        encoding: 'utf8',
+        stdio: 'pipe',
+        timeout: 30000,
+      });
+      this._log(`[Orchestrator] Docker Compose services torn down`);
+    } catch {
+      // Best-effort: compose project may not have been started
+    }
+  }
+
+  /**
+   * Signal a remote daemon that owns the cluster and wait for exit
+   * @param {Object} cluster - Cluster object
+   * @param {Object} options - { action, timeoutMs, killTimeoutMs, signal }
+   * @returns {Promise<Object>} { handled, remotePid, exited, forced }
+   * @private
+   */
+  async _signalRemoteCluster(cluster, options) {
+    const remotePid = cluster.pid;
+    if (!remotePid || remotePid === process.pid) {
+      return { handled: false };
+    }
+
+    if (!this._isProcessRunning(remotePid)) {
+      return { handled: false, remotePid, alreadyExited: true };
+    }
+
+    const action = options?.action || 'stop';
+    const timeoutMs = options?.timeoutMs ?? 10000;
+    const killTimeoutMs = options?.killTimeoutMs ?? 5000;
+    const signal = options?.signal || 'SIGTERM';
+
+    this._log(`[Orchestrator] Sending ${signal} to daemon PID ${remotePid} for ${cluster.id}...`);
+    try {
+      process.kill(remotePid, signal);
+    } catch (error) {
+      if (error.code === 'ESRCH') {
+        return { handled: true, remotePid, exited: true };
+      }
+      throw error;
+    }
+
+    const exited = await this._waitForProcessExit(remotePid, timeoutMs);
+    if (exited) {
+      return { handled: true, remotePid, exited: true };
+    }
+
+    if (action !== 'kill') {
+      throw new Error(
+        `Timed out waiting for daemon PID ${remotePid} to stop cluster ${cluster.id}`
+      );
+    }
+
+    this._log(
+      `[Orchestrator] Daemon PID ${remotePid} still running after ${timeoutMs}ms, sending SIGKILL...`
+    );
+    try {
+      process.kill(remotePid, 'SIGKILL');
+    } catch (error) {
+      if (error.code !== 'ESRCH') {
+        throw error;
+      }
+    }
+
+    const killed = await this._waitForProcessExit(remotePid, killTimeoutMs);
+    if (!killed) {
+      throw new Error(
+        `Failed to kill daemon PID ${remotePid} for cluster ${cluster.id} after SIGKILL`
+      );
+    }
+
+    return { handled: true, remotePid, exited: true, forced: true };
+  }
+
+  /**
    * Stop a cluster
    * @param {String} clusterId - Cluster ID
    */
@@ -1414,6 +1732,8 @@ class Orchestrator {
     if (!cluster) {
       throw new Error(`Cluster ${clusterId} not found`);
     }
+
+    await this._signalRemoteCluster(cluster, { action: 'stop' });
 
     // CRITICAL: Wait for initialization to complete before stopping
     // This ensures ISSUE_OPENED is published, preventing 0-message clusters
@@ -1457,10 +1777,16 @@ class Orchestrator {
 
     // Worktree cleanup on stop: preserve for resume capability
     // Branch stays, worktree stays - can resume work later
+    // BUT: tear down Docker Compose services to free host ports
     if (cluster.worktree?.manager) {
       this._log(`[Orchestrator] Worktree preserved at ${cluster.worktree.path} for resume`);
       this._log(`[Orchestrator] Branch: ${cluster.worktree.branch}`);
-      // Don't cleanup worktree - it will be reused on resume
+      // Tear down Docker Compose services in the worktree to free host ports.
+      // Without this, stopped worktrees hold ports (5433, 6379, etc.) indefinitely.
+      if (cluster.worktree.path) {
+        this._teardownWorktreeCompose(cluster.worktree.path);
+      }
+      // Don't cleanup worktree itself - it will be reused on resume
     }
 
     // Clean up subagent tracking temp files
@@ -1483,6 +1809,8 @@ class Orchestrator {
     if (!cluster) {
       throw new Error(`Cluster ${clusterId} not found`);
     }
+
+    await this._signalRemoteCluster(cluster, { action: 'kill' });
 
     cluster.state = 'stopping';
 
@@ -1635,6 +1963,197 @@ class Orchestrator {
     return this._resumeCleanCluster(clusterId, cluster, recentMessages, prompt);
   }
 
+  _validateGuidanceAgentArgs(clusterId, agentId, text) {
+    if (!clusterId) {
+      throw new Error('sendGuidanceToAgent: clusterId is required');
+    }
+    if (!agentId) {
+      throw new Error('sendGuidanceToAgent: agentId is required');
+    }
+    if (typeof text !== 'string' || !text.trim()) {
+      throw new Error('sendGuidanceToAgent: text must be a non-empty string');
+    }
+  }
+
+  _validateGuidanceClusterArgs(clusterId, text) {
+    if (!clusterId) {
+      throw new Error('sendGuidanceToCluster: clusterId is required');
+    }
+    if (typeof text !== 'string' || !text.trim()) {
+      throw new Error('sendGuidanceToCluster: text must be a non-empty string');
+    }
+  }
+
+  _getClusterOrThrow(clusterId, caller = 'sendGuidanceToAgent') {
+    const cluster = this.clusters.get(clusterId);
+    if (!cluster) {
+      throw new Error(`${caller}: cluster not found: ${clusterId}`);
+    }
+    return cluster;
+  }
+
+  _getAgentOrThrow(cluster, agentId) {
+    const agent = cluster.agents.find((candidate) => candidate.id === agentId);
+    if (!agent) {
+      throw new Error(`sendGuidanceToAgent: agent not found: ${agentId}`);
+    }
+    return agent;
+  }
+
+  _buildDefaultDelivery(agent) {
+    return {
+      status: 'unsupported',
+      reason: 'unknown',
+      method: null,
+      taskId: agent.currentTaskId || null,
+    };
+  }
+
+  async _attemptGuidanceInjection(agent, text, timeoutMs) {
+    try {
+      const result = await agent.injectInput(text, { timeoutMs });
+      return {
+        status: result.status === 'injected' ? 'injected' : 'unsupported',
+        reason: result.status === 'injected' ? null : result.reason || 'unsupported',
+        method: result.status === 'injected' ? result.method || 'pty' : result.method || null,
+        taskId: result.taskId || agent.currentTaskId || null,
+      };
+    } catch (error) {
+      return {
+        status: 'unsupported',
+        reason: error.message,
+        method: null,
+        taskId: agent.currentTaskId || null,
+      };
+    }
+  }
+
+  _buildGuidanceMetadata(options, delivery) {
+    return {
+      ...(options.metadata || {}),
+      delivery: {
+        status: delivery.status,
+        reason: delivery.reason,
+        method: delivery.method,
+        taskId: delivery.taskId,
+        timestamp: Date.now(),
+      },
+    };
+  }
+
+  _summarizeGuidanceDeliveries(deliveries) {
+    const agentIds = Object.keys(deliveries);
+    const summary = {
+      injected: 0,
+      queued: 0,
+      total: agentIds.length,
+    };
+
+    for (const agentId of agentIds) {
+      const delivery = deliveries[agentId];
+      if (delivery?.status === 'injected') {
+        summary.injected += 1;
+      } else {
+        summary.queued += 1;
+      }
+    }
+
+    return summary;
+  }
+
+  _buildClusterGuidanceMetadata(options, deliveries) {
+    return {
+      ...(options.metadata || {}),
+      delivery: {
+        summary: this._summarizeGuidanceDeliveries(deliveries),
+        agents: deliveries,
+        timestamp: Date.now(),
+      },
+    };
+  }
+
+  _publishGuidance(cluster, clusterId, agentId, text, metadata, sender) {
+    cluster.messageBus.publish({
+      cluster_id: clusterId,
+      topic: USER_GUIDANCE_AGENT,
+      sender,
+      target_agent_id: agentId,
+      content: { text },
+      metadata,
+    });
+  }
+
+  _publishClusterGuidance(cluster, clusterId, text, metadata, sender) {
+    cluster.messageBus.publish({
+      cluster_id: clusterId,
+      topic: USER_GUIDANCE_CLUSTER,
+      sender,
+      content: { text },
+      metadata,
+    });
+  }
+
+  /**
+   * Send guidance to a specific agent with optional live injection.
+   * Always persists USER_GUIDANCE_AGENT in the ledger with delivery metadata.
+   * @param {string} clusterId
+   * @param {string} agentId
+   * @param {string} text
+   * @param {object} [options]
+   * @param {string} [options.sender='user']
+   * @param {object} [options.metadata]
+   * @param {number} [options.timeoutMs]
+   * @returns {Promise<{status: string, reason: string|null, method: string|null, taskId: string|null}>}
+   */
+  async sendGuidanceToAgent(clusterId, agentId, text, options = {}) {
+    this._validateGuidanceAgentArgs(clusterId, agentId, text);
+
+    const cluster = this._getClusterOrThrow(clusterId, 'sendGuidanceToAgent');
+    const agent = this._getAgentOrThrow(cluster, agentId);
+    const defaultDelivery = this._buildDefaultDelivery(agent);
+    const delivery =
+      (await this._attemptGuidanceInjection(agent, text, options.timeoutMs)) || defaultDelivery;
+    const metadata = this._buildGuidanceMetadata(options, delivery);
+
+    this._publishGuidance(cluster, clusterId, agentId, text, metadata, options.sender || 'user');
+
+    return delivery;
+  }
+
+  /**
+   * Send guidance to every agent in a cluster with optional live injection.
+   * Always persists a single USER_GUIDANCE_CLUSTER in the ledger with delivery metadata.
+   * @param {string} clusterId
+   * @param {string} text
+   * @param {object} [options]
+   * @param {string} [options.sender='user']
+   * @param {object} [options.metadata]
+   * @param {number} [options.timeoutMs]
+   * @returns {Promise<{summary: {injected: number, queued: number, total: number}, agents: Record<string, {status: string, reason: string|null, method: string|null, taskId: string|null}>, timestamp: number}>}
+   */
+  async sendGuidanceToCluster(clusterId, text, options = {}) {
+    this._validateGuidanceClusterArgs(clusterId, text);
+
+    const cluster = this._getClusterOrThrow(clusterId, 'sendGuidanceToCluster');
+    const agents = Array.isArray(cluster.agents) ? cluster.agents : [];
+    const deliveries = {};
+
+    await Promise.all(
+      agents.map(async (agent) => {
+        const defaultDelivery = this._buildDefaultDelivery(agent);
+        const delivery =
+          (await this._attemptGuidanceInjection(agent, text, options.timeoutMs)) || defaultDelivery;
+        deliveries[agent.id] = delivery;
+      })
+    );
+
+    const metadata = this._buildClusterGuidanceMetadata(options, deliveries);
+
+    this._publishClusterGuidance(cluster, clusterId, text, metadata, options.sender || 'user');
+
+    return metadata.delivery;
+  }
+
   _resolveFailureInfo(cluster, clusterId) {
     if (cluster.failureInfo) {
       return cluster.failureInfo;
@@ -1698,12 +2217,7 @@ class Orchestrator {
       );
     }
 
-    const providerName = normalizeProviderName(
-      cluster.config?.forceProvider ||
-        cluster.config?.defaultProvider ||
-        loadSettings().defaultProvider ||
-        'claude'
-    );
+    const providerName = this._resolveClusterProvider(cluster.config);
     const newContainerId = await cluster.isolation.manager.createContainer(clusterId, {
       workDir,
       image: cluster.isolation.image,
@@ -2119,6 +2633,14 @@ Continue from where you left off. Review your previous output to understand what
             proposedAgentConfigs.push(agentConfig);
           }
         }
+      } else if (op.action === 'load_config' && op.config) {
+        const loadedAgentConfigs = this._resolveLoadConfigAgents(op.config);
+        for (const agentConfig of loadedAgentConfigs) {
+          const existingIdx = proposedAgentConfigs.findIndex((a) => a.id === agentConfig.id);
+          if (existingIdx === -1) {
+            proposedAgentConfigs.push(agentConfig);
+          }
+        }
       } else if (op.action === 'remove_agents' && op.agentIds) {
         for (const agentId of op.agentIds) {
           const idx = proposedAgentConfigs.findIndex((a) => a.id === agentId);
@@ -2135,6 +2657,40 @@ Continue from where you left off. Review your previous output to understand what
     }
 
     return proposedAgentConfigs;
+  }
+
+  _resolveLoadConfigAgents(config) {
+    if (!config) {
+      throw new Error('load_config operation missing config');
+    }
+
+    const templatesDir = path.join(__dirname, '..', 'cluster-templates');
+    let loadedConfig;
+
+    // Parameterized template - resolve with TemplateResolver
+    if (typeof config === 'object' && config.base) {
+      const { base, params } = config;
+      const resolver = new TemplateResolver(templatesDir);
+      loadedConfig = resolver.resolve(base, params || {});
+    } else if (typeof config === 'string') {
+      // Static config - load directly from file
+      const configPath = path.join(templatesDir, `${config}.json`);
+      if (!fs.existsSync(configPath)) {
+        throw new Error(`Config not found: ${config} (looked in ${configPath})`);
+      }
+      const configContent = fs.readFileSync(configPath, 'utf8');
+      loadedConfig = JSON.parse(configContent);
+    } else {
+      throw new Error(
+        `Invalid config format: expected string or {base, params}, got ${typeof config}`
+      );
+    }
+
+    if (!loadedConfig.agents || !Array.isArray(loadedConfig.agents)) {
+      throw new Error(`Config has no agents array`);
+    }
+
+    return loadedConfig.agents;
   }
 
   _validateProposedConfig(clusterId, cluster, proposedAgentConfigs, operations) {
@@ -2226,11 +2782,33 @@ Continue from where you left off. Review your previous output to understand what
         throw new Error('Agent config missing required field: id');
       }
 
-      // Check for duplicate agent ID
-      const existingAgent = cluster.agents.find((a) => a.id === agentConfig.id);
-      if (existingAgent) {
-        this._log(`    ⚠️ Agent ${agentConfig.id} already exists, skipping`);
-        continue;
+      // Check for duplicate agent ID - REPLACE agent entirely
+      // Previous behavior merged triggers but kept old hooks, causing bugs when
+      // loading templates with same agent IDs but different hooks (e.g., quick-validation
+      // and heavy-validation both have consensus-coordinator with different onComplete hooks)
+      const existingAgentIndex = cluster.agents.findIndex((a) => a.id === agentConfig.id);
+      if (existingAgentIndex !== -1) {
+        const existingAgent = cluster.agents[existingAgentIndex];
+        this._log(
+          `    🔄 Replacing agent ${agentConfig.id} (old role: ${existingAgent.config.role})`
+        );
+
+        // Stop the existing agent (cluster.agents contains AgentWrapper instances directly)
+        if (existingAgent.stop) {
+          existingAgent.stop();
+        }
+
+        // Remove from cluster.agents array
+        cluster.agents.splice(existingAgentIndex, 1);
+
+        // Remove from cluster.config.agents if present
+        if (cluster.config.agents) {
+          const configIndex = cluster.config.agents.findIndex((a) => a.id === agentConfig.id);
+          if (configIndex !== -1) {
+            cluster.config.agents.splice(configIndex, 1);
+          }
+        }
+        // Continue to add the new agent below
       }
 
       // Add to config agents array (for persistence)
@@ -2441,7 +3019,7 @@ Continue from where you left off. Review your previous output to understand what
       return;
     }
 
-    const isPrMode = cluster.autoPr || process.env.ZEROSHOT_PR === '1';
+    const isPrMode = cluster.autoPr ?? process.env.ZEROSHOT_PR === '1';
 
     if (isPrMode) {
       // Detect platform from stored cluster metadata OR git context
@@ -2469,7 +3047,8 @@ Continue from where you left off. Review your previous output to understand what
         );
       }
 
-      const gitPusherConfig = generateGitPusherAgent(platform);
+      // Use persisted PR options from cluster state (or empty for repo settings fallback)
+      const gitPusherConfig = generateGitPusherAgent(platform, cluster.prOptions || {});
 
       // Get issue context from ledger
       const issueMsg = cluster.messageBus.ledger.findLast({ topic: 'ISSUE_OPENED' });
@@ -2485,39 +3064,18 @@ Continue from where you left off. Review your previous output to understand what
       this._log(`    [--pr mode] Injected ${platform}-git-pusher agent`);
     } else {
       // Default completion-detector
+      const { SHARED_TRIGGER_SCRIPT } = require('./agents/git-pusher-template');
       const completionDetector = {
         id: 'completion-detector',
         role: 'orchestrator',
-        model: 'haiku',
+        modelLevel: this._resolveCompletionDetectorLevel(cluster.config),
         timeout: 0,
         triggers: [
           {
             topic: 'VALIDATION_RESULT',
             logic: {
               engine: 'javascript',
-              script: `const validators = cluster.getAgentsByRole('validator');
-const lastPush = ledger.findLast({ topic: 'IMPLEMENTATION_READY' });
-if (!lastPush) return false;
-if (validators.length === 0) return true;
-
-const validatorIds = new Set(validators.map((v) => v.id));
-const results = ledger.query({ topic: 'VALIDATION_RESULT', since: lastPush.timestamp });
-
-const latestByValidator = new Map();
-for (const msg of results) {
-  if (!validatorIds.has(msg.sender)) continue;
-  latestByValidator.set(msg.sender, msg);
-}
-
-if (latestByValidator.size < validators.length) return false;
-
-for (const validator of validators) {
-  const msg = latestByValidator.get(validator.id);
-  const approved = msg?.content?.data?.approved;
-  if (!(approved === true || approved === 'true')) return false;
-}
-
-return true;`,
+              script: SHARED_TRIGGER_SCRIPT,
             },
             action: 'stop_cluster',
           },
@@ -2589,7 +3147,15 @@ return true;`,
       pid: cluster.pid || null,
       createdAt: cluster.createdAt,
       agents: cluster.agents.map((a) => a.getState()),
-      messageCount: cluster.messageBus.count({ cluster_id: clusterId }),
+      messageCount: (() => {
+        try {
+          return cluster.messageBus.count({ cluster_id: clusterId });
+        } catch {
+          // Cluster may have closed its ledger during startup failure cleanup.
+          // Status/list should remain safe to call for visibility + supervisor cleanup.
+          return 0;
+        }
+      })(),
     };
   }
 
@@ -2616,8 +3182,17 @@ return true;`,
         id: cluster.id,
         state: state,
         createdAt: cluster.createdAt,
+        issue: cluster.issue || null,
         agentCount: cluster.agents.length,
-        messageCount: cluster.messageBus.getAll(cluster.id).length,
+        messageCount: (() => {
+          try {
+            return cluster.messageBus.count({ cluster_id: cluster.id });
+          } catch {
+            // Cluster may have closed its ledger during startup failure cleanup.
+            // List should remain safe to call for cleanup routines.
+            return 0;
+          }
+        })(),
       };
     });
   }

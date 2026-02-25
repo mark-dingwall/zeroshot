@@ -301,6 +301,8 @@ let dangerousGitHookInstalled = false;
 /**
  * Extract token usage from NDJSON output.
  * Looks for the 'result' event line which contains usage data.
+ * Falls back to summing 'turn.completed' events for cache metrics
+ * when the result event doesn't include them.
  *
  * @param {string} output - Full NDJSON output from Claude CLI
  * @returns {Object|null} Token usage data or null if not found
@@ -316,11 +318,34 @@ function extractTokenUsage(output, providerName = 'claude') {
     return null;
   }
 
+  let cacheReadInputTokens = resultEvent.cacheReadInputTokens || 0;
+  let cacheCreationInputTokens = resultEvent.cacheCreationInputTokens || 0;
+
+  // Fallback: if result event has no cache data, extract from raw turn.completed events.
+  // Claude CLI emits turn.completed with cached_input_tokens but the result event may omit them.
+  if (cacheReadInputTokens === 0) {
+    const lines = output.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const raw = JSON.parse(trimmed);
+        if (raw.type === 'turn.completed' && raw.usage) {
+          const usage = raw.usage;
+          cacheReadInputTokens += usage.cached_input_tokens || usage.cache_read_input_tokens || 0;
+          cacheCreationInputTokens += usage.cache_creation_input_tokens || 0;
+        }
+      } catch {
+        // skip non-JSON lines
+      }
+    }
+  }
+
   return {
     inputTokens: resultEvent.inputTokens || 0,
     outputTokens: resultEvent.outputTokens || 0,
-    cacheReadInputTokens: resultEvent.cacheReadInputTokens || 0,
-    cacheCreationInputTokens: resultEvent.cacheCreationInputTokens || 0,
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
     totalCostUsd: resultEvent.cost || null,
     durationMs: resultEvent.duration || null,
     modelUsage: resultEvent.modelUsage || null,
@@ -1022,6 +1047,54 @@ function handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, re
     return false;
   }
 
+  // CRITICAL: "ID not found" means task completed or was removed - FAIL-SAFE by restarting
+  // We have zero confidence about what happened:
+  // - Task may have completed successfully
+  // - Task may have failed and been cleaned up
+  // - Task may have been manually killed
+  // - Zeroshot storage may be corrupted
+  // With zero confidence → restart is safer than assuming success
+  const errorMessage = error.message || '';
+  const stderrMessage = stderr || '';
+  const isNotFound =
+    errorMessage.includes('ID not found') ||
+    errorMessage.includes('Not found in tasks') ||
+    stderrMessage.includes('ID not found') ||
+    stderrMessage.includes('Not found in tasks');
+
+  if (isNotFound) {
+    console.warn(
+      `[Agent ${agent.id}] ⚠️ Task ${taskId} not found - will restart to ensure completion`
+    );
+
+    if (!state.resolved) {
+      state.resolved = true;
+      finalizeLogFollow(agent, state);
+
+      agent._publish({
+        topic: 'AGENT_ERROR',
+        receiver: 'broadcast',
+        content: {
+          text: `Task ${taskId} not found - restarting for safety`,
+          data: {
+            taskId,
+            error: 'task_not_found',
+            role: agent.role,
+            iteration: agent.iteration,
+          },
+        },
+      });
+
+      resolve({
+        success: false,
+        output: state.output,
+        error: `Task not found - restarting for safety`,
+      });
+    }
+
+    return true;
+  }
+
   state.consecutiveExecFailures++;
   if (state.consecutiveExecFailures < MAX_STATUS_FAILURES) {
     return true;
@@ -1203,13 +1276,34 @@ function followClaudeTaskLogs(agent, taskId) {
   return createLogFollower({ agent, taskId, fsModule, ctPath, providerName });
 }
 
+// Cache zeroshot path at module load time (when PATH is correct)
+let _cachedZeroshotPath = null;
+function _resolveZeroshotPath() {
+  if (_cachedZeroshotPath) return _cachedZeroshotPath;
+
+  try {
+    // Use safe execSync (already imported at top) with explicit PATH
+    const fullPath = execSync('which zeroshot', {
+      encoding: 'utf8',
+      env: { ...process.env }, // Pass current process's PATH
+    }).trim();
+    if (fullPath) {
+      _cachedZeroshotPath = fullPath;
+      return fullPath;
+    }
+  } catch {
+    // which failed, fall back to bare command
+  }
+  _cachedZeroshotPath = 'zeroshot';
+  return 'zeroshot';
+}
+
 /**
  * Get path to claude-zeroshots executable
  * @returns {String} Path to zeroshot command
  */
 function getClaudeTasksPath() {
-  // Use zeroshot command (unified CLI)
-  return 'zeroshot'; // Assumes zeroshot is installed globally
+  return _resolveZeroshotPath();
 }
 
 /**
@@ -1698,7 +1792,17 @@ async function parseResultOutput(agent, output) {
   }
 
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
-  const { extractJsonFromOutput, hasFatalStandaloneOutput } = require('./output-extraction');
+  const {
+    extractJsonFromOutput,
+    extractCliError,
+    hasFatalStandaloneOutput,
+  } = require('./output-extraction');
+
+  // Check for CLI errors FIRST - surface the actual error message
+  const cliError = extractCliError(output);
+  if (cliError) {
+    throw new Error(`CLI error (${cliError.provider}): ${cliError.error}`);
+  }
 
   // Use clean extraction pipeline
   let parsed = extractJsonFromOutput(output, providerName);

@@ -12,12 +12,14 @@
 
 const LogicEngine = require('./logic-engine');
 const { validateAgentConfig } = require('./agent/agent-config');
-const { loadSettings, validateModelAgainstMax } = require('../lib/settings');
+const { loadSettings, validateModelAgainstMax, VALID_MODELS } = require('../lib/settings');
 const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { buildContext } = require('./agent/agent-context-builder');
+const { collectQueuedGuidance } = require('./agent/guidance-queue');
 const { findMatchingTrigger, evaluateTrigger } = require('./agent/agent-trigger-evaluator');
 const { executeHook } = require('./agent/agent-hook-executor');
+const { injectInput: injectAgentInput } = require('./agent/agent-input-injector');
 const {
   spawnClaudeTask,
   followClaudeTaskLogs,
@@ -73,6 +75,8 @@ class AgentWrapper {
     this.lastTaskEndTime = null; // Track when last task completed (for context filtering)
     /** @type {number | null} */
     this.lastAgentStartTime = null; // Track when agent last began executing (for context filtering)
+    /** @type {number | null} */
+    this.lastGuidanceAppliedAt = null; // Track last queued guidance applied to prompt
 
     // LIVENESS DETECTION - Track output freshness to detect stuck agents
     /** @type {number | null} */
@@ -246,17 +250,17 @@ class AgentWrapper {
 
   /**
    * Select model based on current iteration and agent config
-   * Enforces legacy maxModel/minModel for Claude's haiku/sonnet/opus
+   * Enforces legacy maxModel/minModel aliases for Claude compatibility
    * @returns {string|null}
    * @private
    */
   _selectModel() {
     const spec = this._resolveModelSpec();
     const settings = loadSettings();
-    const maxModel = settings.maxModel || 'sonnet';
+    const maxModel = settings.maxModel;
     const minModel = settings.minModel || null;
 
-    if (spec.model && ['opus', 'sonnet', 'haiku'].includes(spec.model)) {
+    if (spec.model && maxModel && VALID_MODELS.includes(spec.model)) {
       return validateModelAgainstMax(spec.model, maxModel, minModel);
     }
 
@@ -407,6 +411,12 @@ class AgentWrapper {
    */
   _buildContext(triggeringMessage) {
     const previousAgentStart = this.lastAgentStartTime;
+    const queuedGuidance = collectQueuedGuidance({
+      messageBus: this.messageBus,
+      clusterId: this.cluster.id,
+      agentId: this.id,
+      lastDeliveredAt: this.lastGuidanceAppliedAt,
+    });
     const context = buildContext({
       id: this.id,
       role: this.role,
@@ -418,6 +428,7 @@ class AgentWrapper {
       lastAgentStartTime: previousAgentStart,
       triggeringMessage,
       selectedPrompt: this._selectPrompt(),
+      queuedGuidance: queuedGuidance.guidanceBlock,
       // Pass isolation state for conditional git restriction
       worktree: this.worktree,
       isolation: this.isolation,
@@ -429,6 +440,10 @@ class AgentWrapper {
     const now = Date.now();
     this.lastAgentStartTime =
       typeof latestTimestamp === 'number' ? Math.max(now, latestTimestamp + 1) : now;
+
+    if (queuedGuidance.latestTimestamp !== null) {
+      this.lastGuidanceAppliedAt = queuedGuidance.latestTimestamp;
+    }
 
     return context;
   }
@@ -540,6 +555,16 @@ class AgentWrapper {
 
     // Execute the task with resume context
     await this._executeTask(triggeringMessage);
+  }
+
+  /**
+   * Inject live input into a running agent task when possible
+   * @param {string} text
+   * @param {object} [options]
+   * @returns {Promise<{status: string, reason?: string|null, method?: string|null, taskId?: string|null}>}
+   */
+  injectInput(text, options = {}) {
+    return injectAgentInput(this, text, options);
   }
 
   /**
