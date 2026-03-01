@@ -9,7 +9,7 @@
  */
 
 const vm = require('vm');
-const { execSync } = require('../lib/safe-exec'); // Enforces timeouts
+const { execSync, spawnFileSync } = require('../lib/safe-exec'); // Enforces timeouts
 
 /**
  * Deep merge two objects, with source taking precedence
@@ -146,7 +146,7 @@ async function executeHook(params) {
     const claimedPrNumber = structuredOutput.pr_number || null;
 
     // Skip actual gh CLI verification if explicitly disabled (for integration tests)
-    // Unit tests mock execSync, so they still test the verification logic
+    // Unit tests mock spawnFileSync, so they still test the verification logic
     if (process.env.ZEROSHOT_SKIP_GH_VERIFY === '1') {
       agent._log(`✅ VERIFICATION SKIPPED (ZEROSHOT_SKIP_GH_VERIFY=1)`);
       agent._publish({
@@ -164,9 +164,14 @@ async function executeHook(params) {
 
     // Use explicit PR number when available (deterministic).
     // Branch-based resolution can fail after merge when branch is deleted/transitional.
-    const ghPrViewCmd = claimedPrNumber
-      ? `gh pr view ${claimedPrNumber} --json state,mergedAt,url,number`
-      : `gh pr view --json state,mergedAt,url,number`;
+    // Args are passed as an array (never interpolated into a shell string) to prevent injection.
+    const ghArgs = [
+      'pr',
+      'view',
+      ...(claimedPrNumber ? [String(claimedPrNumber)] : []),
+      '--json',
+      'state,mergedAt,url,number',
+    ];
 
     // GitHub API is eventually consistent after `gh pr merge`.
     // Merge state can take 5-30s to propagate. Poll with backoff before concluding agent lied.
@@ -177,10 +182,8 @@ async function executeHook(params) {
     let prData;
     try {
       prData = JSON.parse(
-        execSync(ghPrViewCmd, {
-          encoding: 'utf8',
+        spawnFileSync('gh', ghArgs, {
           cwd: agent.workingDirectory,
-          stdio: ['pipe', 'pipe', 'pipe'],
         })
       );
     } catch (err) {
@@ -205,7 +208,7 @@ async function executeHook(params) {
     // Poll for merge propagation if not yet showing as merged
     if (!prData.mergedAt) {
       const prNumber = prData.number;
-      const pollCmd = `gh pr view ${prNumber} --json state,mergedAt,url,number`;
+      const pollArgs = ['pr', 'view', String(prNumber), '--json', 'state,mergedAt,url,number'];
       agent._log(
         `⏳ PR #${prNumber} not yet showing as merged (state="${prData.state}"). ` +
           `Polling for GitHub API propagation (up to ${MERGE_POLL_ATTEMPTS} attempts, ${MERGE_POLL_INTERVAL_MS / 1000}s apart)...`
@@ -215,10 +218,8 @@ async function executeHook(params) {
         await new Promise((resolve) => setTimeout(resolve, MERGE_POLL_INTERVAL_MS));
         try {
           prData = JSON.parse(
-            execSync(pollCmd, {
-              encoding: 'utf8',
+            spawnFileSync('gh', pollArgs, {
               cwd: agent.workingDirectory,
-              stdio: ['pipe', 'pipe', 'pipe'],
             })
           );
         } catch {

@@ -26,7 +26,7 @@ describe('verify_github_pr hook action', function () {
   this.timeout(60000);
 
   let executeHook;
-  let mockExecSyncFn;
+  let mockSpawnFileSync;
 
   beforeEach(() => {
     // Clear module cache
@@ -39,22 +39,25 @@ describe('verify_github_pr hook action', function () {
     // Mock safe-exec module
     require.cache[require.resolve(safeExecPath)] = {
       exports: {
-        execSync: function (...args) {
-          if (mockExecSyncFn) {
-            return mockExecSyncFn(...args);
-          }
+        execSync: function () {
           throw new Error('Mock execSync not configured');
+        },
+        spawnFileSync: function (...args) {
+          if (mockSpawnFileSync) {
+            return mockSpawnFileSync(...args);
+          }
+          throw new Error('Mock spawnFileSync not configured');
         },
       },
     };
 
     // Reload executeHook with mocked safe-exec
     executeHook = require('../src/agent/agent-hook-executor').executeHook;
-    mockExecSyncFn = null;
+    mockSpawnFileSync = null;
   });
 
   afterEach(() => {
-    mockExecSyncFn = null;
+    mockSpawnFileSync = null;
   });
 
   it('should not require pr_number in structured output', async function () {
@@ -68,7 +71,7 @@ describe('verify_github_pr hook action', function () {
       }),
     };
 
-    mockExecSyncFn = () => {
+    mockSpawnFileSync = () => {
       return JSON.stringify({
         number: 123,
         state: 'MERGED',
@@ -92,7 +95,7 @@ describe('verify_github_pr hook action', function () {
       }),
     };
 
-    mockExecSyncFn = () => {
+    mockSpawnFileSync = () => {
       const error = new Error('Could not resolve to a PullRequest');
       error.status = 1;
       throw error;
@@ -119,7 +122,7 @@ describe('verify_github_pr hook action', function () {
     };
 
     // Always returns OPEN — genuinely not merged
-    mockExecSyncFn = () => {
+    mockSpawnFileSync = () => {
       return JSON.stringify({
         number: 123,
         state: 'OPEN',
@@ -154,7 +157,7 @@ describe('verify_github_pr hook action', function () {
 
     // Simulate GitHub eventual consistency: OPEN for first 3 calls, then MERGED
     let callCount = 0;
-    mockExecSyncFn = () => {
+    mockSpawnFileSync = () => {
       callCount++;
       if (callCount <= 3) {
         return JSON.stringify({
@@ -191,9 +194,9 @@ describe('verify_github_pr hook action', function () {
       }),
     };
 
-    let capturedCmd;
-    mockExecSyncFn = (cmd) => {
-      capturedCmd = cmd;
+    let capturedArgs;
+    mockSpawnFileSync = (_file, args) => {
+      capturedArgs = args;
       return JSON.stringify({
         number: 555,
         state: 'MERGED',
@@ -204,8 +207,8 @@ describe('verify_github_pr hook action', function () {
 
     await executeHook({ hook, agent, result });
     assert(
-      capturedCmd.includes('gh pr view 555'),
-      `Expected PR number in command, got: ${capturedCmd}`
+      capturedArgs.includes('555'),
+      `Expected PR number in args, got: ${JSON.stringify(capturedArgs)}`
     );
   });
 
@@ -218,9 +221,9 @@ describe('verify_github_pr hook action', function () {
       }),
     };
 
-    let capturedCmd;
-    mockExecSyncFn = (cmd) => {
-      capturedCmd = cmd;
+    let capturedArgs;
+    mockSpawnFileSync = (_file, args) => {
+      capturedArgs = args;
       return JSON.stringify({
         number: 100,
         state: 'MERGED',
@@ -230,7 +233,7 @@ describe('verify_github_pr hook action', function () {
     };
 
     await executeHook({ hook, agent, result });
-    assert.strictEqual(capturedCmd, 'gh pr view --json state,mergedAt,url,number');
+    assert.deepStrictEqual(capturedArgs, ['pr', 'view', '--json', 'state,mergedAt,url,number']);
   });
 
   it('should publish CLUSTER_COMPLETE when PR verified merged', async function () {
@@ -243,7 +246,7 @@ describe('verify_github_pr hook action', function () {
       }),
     };
 
-    mockExecSyncFn = () => {
+    mockSpawnFileSync = () => {
       return JSON.stringify({
         number: 456,
         state: 'MERGED',
@@ -270,7 +273,7 @@ describe('verify_github_pr hook action', function () {
     };
 
     let capturedCwd;
-    mockExecSyncFn = (cmd, opts) => {
+    mockSpawnFileSync = (_file, _args, opts) => {
       capturedCwd = opts.cwd;
       return JSON.stringify({
         number: 789,
@@ -294,7 +297,7 @@ describe('verify_github_pr hook action', function () {
       }),
     };
 
-    mockExecSyncFn = () => {
+    mockSpawnFileSync = () => {
       throw new Error('Network error: timeout');
     };
 
@@ -316,7 +319,7 @@ describe('verify_github_pr hook action', function () {
       }),
     };
 
-    mockExecSyncFn = () => {
+    mockSpawnFileSync = () => {
       return JSON.stringify({
         number: 222,
         state: 'MERGED',
