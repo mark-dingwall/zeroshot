@@ -2795,7 +2795,7 @@ Continue from where you left off. Review your previous output to understand what
 
         // Stop the existing agent (cluster.agents contains AgentWrapper instances directly)
         if (existingAgent.stop) {
-          existingAgent.stop();
+          await existingAgent.stop();
         }
 
         // Remove from cluster.agents array

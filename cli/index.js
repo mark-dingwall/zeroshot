@@ -2363,7 +2363,7 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps)
       const providerOverride = resolveProviderOverride(options);
 
       // Preflight checks
-      await runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
+      runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
 
       // Secondary preflight: token-free template simulation/validation
       const simMode = String(options.sim || 'fast').toLowerCase();

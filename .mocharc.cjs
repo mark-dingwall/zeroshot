@@ -10,7 +10,7 @@ const config = {
 };
 
 if (!hasCliTestFile) {
-  config.spec = 'tests/**/*.test.js';
+  config.spec = ['tests/unit/**/*.test.js', 'tests/*.test.js'];
 }
 
 module.exports = config;

@@ -875,8 +875,6 @@ async function handleTaskAttemptFailure({
 
   if (isLockError) {
     await handleLockContention();
-  } else if (attempt < maxRetries) {
-    console.error(`Will retry in ${baseDelay * Math.pow(2, attempt - 1)}ms...`);
   }
   console.error(`${'='.repeat(80)}
 `);
