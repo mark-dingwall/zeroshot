@@ -10,6 +10,9 @@ dist/
 build/
 *.tsbuildinfo
 
+# Rust build output
+tui-rs/target/
+
 # Environment
 .env
 .env.local
@@ -40,7 +43,8 @@ tmp/
 *.tmp
 
 # Zeroshot runtime
-.zeroshot/
+.zeroshot/*
+!.zeroshot/settings.json
 .claude-zeroshots/
 zeroshot-isolated/
 zeroshot-cluster-configs/
@@ -59,3 +63,4 @@ report/
 # Generated/temp files
 test-metadata-manual.sh
 test-isolated-fix.js
+lib/tui-backend/

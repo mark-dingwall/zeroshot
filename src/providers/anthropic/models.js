@@ -2,6 +2,7 @@ const MODEL_CATALOG = {
   haiku: { rank: 1 },
   sonnet: { rank: 2 },
   opus: { rank: 3 },
+  'opus-4.6': { rank: 3 },
 };
 
 const LEVEL_MAPPING = {

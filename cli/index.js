@@ -49,6 +49,17 @@ const {
 const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider, parseProviderChunk } = require('../src/providers');
 const { MOUNT_PRESETS, resolveEnvs } = require('../lib/docker-config');
+const { launchTuiSession } = require('../lib/tui-launcher');
+const {
+  detectGitRepoRoot,
+  detectRunInput,
+  loadClusterConfig,
+  resolveConfigPath,
+  resolveProviderOverride,
+  startClusterFromFile,
+  startClusterFromIssue,
+  startClusterFromText,
+} = require('../lib/start-cluster');
 const { requirePreflight } = require('../src/preflight');
 const { providersCommand, setDefaultCommand, setupCommand } = require('./commands/providers');
 // Setup wizard removed - use: zeroshot settings set <key> <value>
@@ -152,43 +163,6 @@ process.on('unhandledRejection', (reason) => {
 // Package root directory (for resolving default config paths)
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
 
-/**
- * Detect git repository root from current directory
- * Critical for CWD propagation - agents must work in the target repo, not where CLI was invoked
- * @returns {string} Git repo root, or process.cwd() if not in a git repo
- */
-function detectGitRepoRoot() {
-  const { execSync } = require('child_process');
-  try {
-    const root = execSync('git rev-parse --show-toplevel', {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    return root;
-  } catch {
-    // Not in a git repo - use current directory
-    return process.cwd();
-  }
-}
-
-/**
- * Parse CLI mount specs (host:container[:ro]) into mount config objects
- * @param {string[]} specs - Array of mount specs from CLI
- * @returns {Array<{host: string, container: string, readonly: boolean}>}
- */
-function parseMountSpecs(specs) {
-  return specs.map((spec) => {
-    const parts = spec.split(':');
-    if (parts.length < 2) {
-      throw new Error(`Invalid mount spec: "${spec}". Format: host:container[:ro]`);
-    }
-    const host = parts[0];
-    const container = parts[1];
-    const readonly = parts[2] === 'ro';
-    return { host, container, readonly };
-  });
-}
-
 function normalizeRunOptions(options) {
   if (options.ship) {
     options.pr = true;
@@ -204,48 +178,7 @@ function normalizeRunOptions(options) {
   }
 }
 
-function detectRunInput(inputArg) {
-  const input = {};
-
-  // Check if it looks like an issue URL or key
-  const isGitHubUrl = /^https?:\/\/github\.com\/[\w-]+\/[\w-]+\/issues\/\d+/.test(inputArg);
-  const isGitLabUrl = /gitlab\.(com|[\w.-]+)\/[\w-]+\/[\w-]+\/-\/issues\/\d+/.test(inputArg);
-  const isJiraUrl = /(atlassian\.net|jira\.[\w.-]+)\/browse\/[A-Z][A-Z0-9]+-\d+/.test(inputArg);
-  const isAzureUrl =
-    /dev\.azure\.com\/.*\/_workitems\/edit\/\d+/.test(inputArg) ||
-    /visualstudio\.com\/.*\/_workitems\/edit\/\d+/.test(inputArg);
-  const isJiraKey = /^[A-Z][A-Z0-9]+-\d+$/.test(inputArg);
-  const isIssueNumber = /^\d+$/.test(inputArg);
-  const isRepoIssue = /^[\w-]+\/[\w-]+#\d+$/.test(inputArg);
-  const isMarkdownFile = /\.(md|markdown)$/i.test(inputArg);
-
-  if (
-    isGitHubUrl ||
-    isGitLabUrl ||
-    isJiraUrl ||
-    isAzureUrl ||
-    isJiraKey ||
-    isIssueNumber ||
-    isRepoIssue
-  ) {
-    input.issue = inputArg;
-  } else if (isMarkdownFile) {
-    input.file = inputArg;
-  } else {
-    input.text = inputArg;
-  }
-  return input;
-}
-
-function resolveProviderOverride(options) {
-  const override = options.provider || process.env.ZEROSHOT_PROVIDER;
-  if (!override || (typeof override === 'string' && !override.trim())) {
-    return null;
-  }
-  return normalizeProviderName(override);
-}
-
-async function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
+function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
   // Detect which issue provider tool is needed
   let issueProvider = null;
   let targetHost = null;
@@ -283,7 +216,7 @@ async function runClusterPreflight({ input, options, providerOverride, settings,
   if (!options.skipQualityGate && settings.autoQualitySetup !== false) {
     const { ensureQualityConfig } = require('../lib/quality-detection');
     const targetCwd = process.env.ZEROSHOT_CWD || detectGitRepoRoot();
-    const result = await ensureQualityConfig(targetCwd);
+    const result = ensureQualityConfig(targetCwd);
     if (result.created && process.env.ZEROSHOT_DAEMON !== '1') {
       console.log(`✓ Quality gate configured: ${result.command}`);
       console.log('  Edit ~/.zeroshot/projects/ config, or skip with --skip-quality-gate');
@@ -314,7 +247,23 @@ function createDaemonLogFile(clusterId) {
   return fs.openSync(logPath, 'w');
 }
 
+function serializeRunOptions(options) {
+  try {
+    return JSON.stringify(options);
+  } catch {
+    return '';
+  }
+}
+
+function resolveMergeQueueEnv(value) {
+  if (value === true) return '1';
+  if (value === false) return '0';
+  return '';
+}
+
 function buildDaemonEnv(options, clusterId, targetCwd) {
+  const mergeQueueEnv = resolveMergeQueueEnv(options.mergeQueue);
+  const runOptionsEnv = serializeRunOptions(options);
   return {
     ...process.env,
     ZEROSHOT_DAEMON: '1',
@@ -326,6 +275,10 @@ function buildDaemonEnv(options, clusterId, targetCwd) {
     ZEROSHOT_WORKERS: options.workers?.toString() || '',
     ZEROSHOT_MODEL: options.model || '',
     ZEROSHOT_PROVIDER: options.provider || '',
+    ZEROSHOT_RUN_OPTIONS: runOptionsEnv,
+    ZEROSHOT_PR_BASE: options.prBase || '',
+    ZEROSHOT_MERGE_QUEUE: mergeQueueEnv,
+    ZEROSHOT_CLOSE_ISSUE: options.closeIssue || '',
     ZEROSHOT_CWD: targetCwd,
   };
 }
@@ -353,42 +306,6 @@ function resolveClusterId(generateName) {
 
 function resolveConfigName(options, settings) {
   return options.config || settings.defaultConfig;
-}
-
-function resolveConfigPath(configName) {
-  if (path.isAbsolute(configName) || configName.startsWith('./') || configName.startsWith('../')) {
-    return path.resolve(process.cwd(), configName);
-  }
-  if (configName.endsWith('.json')) {
-    return path.join(PACKAGE_ROOT, 'cluster-templates', configName);
-  }
-  return path.join(PACKAGE_ROOT, 'cluster-templates', `${configName}.json`);
-}
-
-function ensureConfigProviderDefaults(config, settings) {
-  if (!config.defaultProvider) {
-    config.defaultProvider = settings.defaultProvider || 'claude';
-  }
-  config.defaultProvider = normalizeProviderName(config.defaultProvider) || 'claude';
-}
-
-function applyProviderOverrideToConfig(config, providerOverride, settings) {
-  const provider = getProvider(providerOverride);
-  const providerSettings = settings.providerSettings?.[providerOverride] || {};
-  config.forceProvider = providerOverride;
-  config.defaultProvider = providerOverride;
-  config.forceLevel = providerSettings.defaultLevel || provider.getDefaultLevel();
-  config.defaultLevel = config.forceLevel;
-  console.log(chalk.dim(`Provider override: ${providerOverride} (all agents)`));
-}
-
-function loadClusterConfig(orchestrator, configPath, settings, providerOverride) {
-  const config = orchestrator.loadConfig(configPath);
-  ensureConfigProviderDefaults(config, settings);
-  if (providerOverride) {
-    applyProviderOverrideToConfig(config, providerOverride, settings);
-  }
-  return config;
 }
 
 function trackActiveCluster(clusterId, orchestrator) {
@@ -449,8 +366,11 @@ function applyModelOverrideToConfig(config, modelOverride, providerOverride, set
     );
   }
 
-  if (providerName === 'claude' && ['opus', 'sonnet', 'haiku'].includes(modelOverride)) {
-    const { validateModelAgainstMax } = require('../lib/settings');
+  if (providerName === 'claude') {
+    const { validateModelAgainstMax, VALID_MODELS } = require('../lib/settings');
+    if (!VALID_MODELS.includes(modelOverride)) {
+      return;
+    }
     try {
       validateModelAgainstMax(modelOverride, settings.maxModel);
     } catch (err) {
@@ -466,35 +386,6 @@ function applyModelOverrideToConfig(config, modelOverride, providerOverride, set
     }
   }
   console.log(chalk.dim(`Model override: ${modelOverride} (all agents)`));
-}
-
-function buildStartOptions({
-  clusterId,
-  options,
-  settings,
-  providerOverride,
-  modelOverride,
-  forceProvider,
-}) {
-  const targetCwd = process.env.ZEROSHOT_CWD || detectGitRepoRoot();
-  return {
-    clusterId,
-    cwd: targetCwd,
-    isolation: options.docker || process.env.ZEROSHOT_DOCKER === '1' || settings.defaultDocker,
-    isolationImage: options.dockerImage || process.env.ZEROSHOT_DOCKER_IMAGE || undefined,
-    worktree: options.worktree || process.env.ZEROSHOT_WORKTREE === '1',
-    autoPr: options.pr || process.env.ZEROSHOT_PR === '1',
-    autoMerge: process.env.ZEROSHOT_MERGE === '1',
-    autoPush: process.env.ZEROSHOT_PUSH === '1',
-    modelOverride: modelOverride || undefined,
-    providerOverride: providerOverride || undefined,
-    noMounts: options.noMounts || false,
-    mounts: options.mount ? parseMountSpecs(options.mount) : undefined,
-    containerHome: options.containerHome || undefined,
-    forceProvider: forceProvider || undefined,
-    paramOverrides: options.skipQualityGate ? { quality_gate: false } : undefined,
-    settings, // Pass settings for provider detection
-  };
 }
 
 function createStatusFooter(clusterId, messageBus) {
@@ -2339,6 +2230,9 @@ Examples:
   ${chalk.cyan('zeroshot run "Implement feature X"')}  Run cluster from plain text
   ${chalk.cyan('zeroshot run 123 -d')}                 Run in background (detached)
   ${chalk.cyan('zeroshot run 123 --docker')}           Run in Docker container (safe for e2e tests)
+  ${chalk.cyan('zeroshot')}                            Open TUI (TTY only)
+  ${chalk.cyan('zeroshot tui')}                        Open TUI explicitly
+  ${chalk.cyan('zeroshot watch')}                      Open TUI Monitor view
   ${chalk.cyan('zeroshot task run "Fix the bug"')}     Run single-agent background task
   ${chalk.cyan('zeroshot list')}                       List all tasks and clusters
   ${chalk.cyan('zeroshot task list')}                  List tasks only
@@ -2395,12 +2289,23 @@ program
     '--ship',
     'Full automation: worktree isolation + PR + auto-merge (use --docker for Docker)'
   )
+  .option('--pr-base <branch>', 'Target branch for PRs (default: repo default branch)')
+  .option('--merge-queue', 'Use GitHub merge queue instead of direct merge')
+  .option(
+    '--close-issue <mode>',
+    'When to close issue after merge: auto|always|never (default: from .zeroshot/settings.json or never)'
+  )
   .option('--workers <n>', 'Max sub-agents for worker to spawn in parallel', parseInt)
   .option(
     '--provider <provider>',
     'Override all agents to use a provider (claude, codex, gemini, opencode)'
   )
   .option('--model <model>', 'Override all agent models (provider-specific model id)')
+  .option(
+    '--sim <mode>',
+    'Token-free simulation gate for templates (off|fast|deep). Default: fast',
+    'fast'
+  )
   .option('-G, --github', 'Force GitHub as issue source')
   .option('-L, --gitlab', 'Force GitLab as issue source')
   .option('-J, --jira', 'Force Jira as issue source')
@@ -2458,7 +2363,31 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps)
       const providerOverride = resolveProviderOverride(options);
 
       // Preflight checks
-      await runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
+      runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
+
+      // Secondary preflight: token-free template simulation/validation
+      const simMode = String(options.sim || 'fast').toLowerCase();
+      if (simMode !== 'off') {
+        const { validateTemplates } = require('../src/template-validation');
+        const templatesDir = path.join(PACKAGE_ROOT, 'cluster-templates');
+        const deep = simMode === 'deep';
+        const report = await validateTemplates({ templatesDir, deep });
+        if (!report.valid) {
+          console.error('\n' + '='.repeat(60));
+          console.error(`TEMPLATE VALIDATION FAILED (sim=${simMode})`);
+          console.error('='.repeat(60));
+          for (const { filePath, result } of report.results) {
+            if (result.valid) continue;
+            const rel = path.relative(process.cwd(), filePath);
+            console.error(`\n❌ ${rel}`);
+            for (const err of result.errors) {
+              console.error(`   ERROR: ${err}`);
+            }
+          }
+          console.error('\nFix template errors before running to avoid token burn.\n');
+          process.exit(1);
+        }
+      }
 
       const { generateName } = require('../src/name-generator');
 
@@ -2485,17 +2414,46 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps)
       const modelOverride = resolveModelOverride(options);
       applyModelOverrideToConfig(config, modelOverride, providerOverride, settings);
 
-      const startOptions = buildStartOptions({
-        clusterId,
-        options,
-        settings,
-        providerOverride,
-        modelOverride,
-        forceProvider,
-      });
-
-      // Start cluster
-      const cluster = await orchestrator.start(config, input, startOptions);
+      let cluster = null;
+      if (input.text) {
+        cluster = await startClusterFromText({
+          orchestrator,
+          text: input.text,
+          config,
+          settings,
+          providerOverride,
+          modelOverride,
+          forceProvider,
+          clusterId,
+          options,
+        });
+      } else if (input.issue) {
+        cluster = await startClusterFromIssue({
+          orchestrator,
+          issue: input.issue,
+          config,
+          settings,
+          providerOverride,
+          modelOverride,
+          forceProvider,
+          clusterId,
+          options,
+        });
+      } else if (input.file) {
+        cluster = await startClusterFromFile({
+          orchestrator,
+          file: input.file,
+          config,
+          settings,
+          providerOverride,
+          modelOverride,
+          forceProvider,
+          clusterId,
+          options,
+        });
+      } else {
+        throw new Error('Invalid run input: expected text, issue, or file');
+      }
 
       if (!process.env.ZEROSHOT_DAEMON) {
         await streamClusterInForeground(cluster, orchestrator, clusterId);
@@ -3351,24 +3309,60 @@ program
     }
   });
 
-// Watch command - interactive TUI dashboard
+// Watch command - TUI Monitor view
 program
   .command('watch')
-  .description('Interactive TUI to monitor clusters')
+  .description('Open TUI in Monitor view')
   .option('--refresh-rate <ms>', 'Refresh interval in milliseconds', '1000')
-  .action(async (options) => {
+  .action((_options) => {
     try {
-      const TUI = require('../src/tui');
-      const tui = new TUI({
-        orchestrator: await getOrchestrator(),
-        refreshRate: parseInt(options.refreshRate, 10),
-      });
-      await tui.start();
+      launchTuiSession({ initialView: 'monitor' });
     } catch (error) {
       console.error('Error starting TUI:', error.message);
       process.exit(1);
     }
   });
+
+// TUI command - TUI session
+program
+  .command('tui')
+  .description('Open TUI')
+  .option(
+    '--provider <provider>',
+    'Override provider for this TUI session (claude, codex, gemini, opencode)'
+  )
+  .option('--ui <variant>', 'Select UI variant (classic, disruptive)')
+  .allowExcessArguments(true)
+  .allowUnknownOption(true)
+  .action((options) => {
+    try {
+      launchTuiSession(options);
+    } catch (error) {
+      console.error('Error starting TUI:', error.message);
+      process.exit(1);
+    }
+  });
+
+function registerTuiEntrypoint(commandName, providerName) {
+  program
+    .command(commandName)
+    .description(`Interactive TUI to monitor clusters (provider: ${providerName})`)
+    .allowExcessArguments(true)
+    .allowUnknownOption(true)
+    .action(() => {
+      try {
+        launchTuiSession({ provider: providerName });
+      } catch (error) {
+        console.error('Error starting TUI:', error.message);
+        process.exit(1);
+      }
+    });
+}
+
+registerTuiEntrypoint('codex', 'codex');
+registerTuiEntrypoint('claude', 'claude');
+registerTuiEntrypoint('gemini', 'gemini');
+registerTuiEntrypoint('opencode', 'opencode');
 
 // Settings management
 const settingsCmd = program.command('settings').description('Manage zeroshot settings');
@@ -4433,6 +4427,8 @@ function formatTokenUsage(tokensByRole) {
   // Total line
   const inputTokens = total.inputTokens || 0;
   const outputTokens = total.outputTokens || 0;
+  const cacheReadTokens = total.cacheReadInputTokens || 0;
+  const uncachedInputTokens = inputTokens - cacheReadTokens;
   const totalTokens = inputTokens + outputTokens;
   const cost = total.totalCostUsd || 0;
 
@@ -4445,6 +4441,17 @@ function formatTokenUsage(tokensByRole) {
       chalk.yellow(fmt(outputTokens)) +
       chalk.dim(' out)')
   );
+
+  // Cache breakdown (if cache data available)
+  if (cacheReadTokens > 0) {
+    const cachePercent = Math.round((cacheReadTokens / inputTokens) * 100);
+    lines.push(
+      chalk.dim('Cache: ') +
+        chalk.green(fmt(cacheReadTokens) + ' cached') +
+        chalk.dim(' (' + cachePercent + '%) + ') +
+        chalk.yellow(fmt(uncachedInputTokens) + ' new')
+    );
+  }
 
   // Cost line (if available)
   if (cost > 0) {
@@ -5286,9 +5293,21 @@ async function main() {
   // Check for updates (non-blocking if offline)
   await checkForUpdates({ quiet: isQuiet });
 
+  let args = process.argv.slice(2);
+
+  if (args.length === 0) {
+    const isInteractiveTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+    if (isInteractiveTty) {
+      process.argv.splice(2, 0, 'tui');
+    } else {
+      program.outputHelp();
+      return;
+    }
+  }
+
   // Default command handling: if first arg doesn't match a known command, treat it as 'run'
   // This allows `zeroshot "task"` to work the same as `zeroshot run "task"`
-  const args = process.argv.slice(2);
+  args = process.argv.slice(2);
   if (args.length > 0) {
     const firstArg = args[0];
 

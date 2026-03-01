@@ -216,7 +216,6 @@ export default [
   {
     // TUI/CLI/streaming files use ANSI escape codes for terminal colors - allow control characters
     files: [
-      'src/tui/**/*.js',
       'src/streaming/*.js',
       'src/streaming/**/*.js',
       'src/status-footer.js',
@@ -254,7 +253,15 @@ export default [
     },
   },
   {
-    ignores: ['node_modules/**', 'dist/**', 'coverage/**', 'cluster-hooks/**', 'hooks/**'],
+    ignores: [
+      'node_modules/**',
+      'dist/**',
+      'coverage/**',
+      'cluster-hooks/**',
+      'hooks/**',
+      'lib/tui-backend/**',
+      '.claude/ref/**',
+    ],
   },
   prettierConfig,
 ];

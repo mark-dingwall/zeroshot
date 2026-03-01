@@ -7,97 +7,52 @@
  * Exit codes: 0 = all valid, 1 = validation errors found
  */
 
-const fs = require('fs');
 const path = require('path');
-const { validateConfig } = require('../src/config-validator');
+const { validateTemplates } = require('../src/template-validation');
 
 const TEMPLATES_DIR = path.join(__dirname, '../cluster-templates');
 
-function findJsonFiles(dir) {
-  const files = [];
-  if (!fs.existsSync(dir)) return files;
-
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...findJsonFiles(fullPath));
-    } else if (entry.name.endsWith('.json')) {
-      files.push(fullPath);
-    }
-  }
-  return files;
+function parseArgs(argv) {
+  const deep =
+    argv.includes('--deep') ||
+    argv.includes('--sim=deep') ||
+    process.env.ZEROSHOT_TEMPLATE_SIM === 'deep';
+  return { deep };
 }
 
-function substituteTemplateParams(config) {
-  if (!config.params) return config;
-  let json = JSON.stringify(config);
-  for (const [name, param] of Object.entries(config.params)) {
-    const value = param.default !== undefined ? param.default : param.type === 'number' ? 0 : '';
-    json = json.replace(new RegExp(`\\{\\{${name}\\}\\}`, 'g'), String(value));
-  }
-  return JSON.parse(json);
-}
+async function main() {
+  console.log('Validating cluster templates...\n');
 
-function validateTemplate(filePath) {
-  const relativePath = path.relative(process.cwd(), filePath);
+  const { deep } = parseArgs(process.argv.slice(2));
+  const report = await validateTemplates({ templatesDir: TEMPLATES_DIR, deep });
 
-  try {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const config = JSON.parse(content);
+  let hasErrors = false;
 
-    // Skip non-cluster configs (like package.json)
-    if (!config.agents && !config.name) {
-      return { valid: true, skipped: true };
-    }
-
-    const configToValidate = substituteTemplateParams(config);
-    const result = validateConfig(configToValidate);
+  for (const { filePath, result } of report.results) {
+    const relativePath = path.relative(process.cwd(), filePath);
 
     if (!result.valid) {
+      hasErrors = true;
       console.error(`\n❌ ${relativePath}`);
       for (const error of result.errors) {
         console.error(`   ERROR: ${error}`);
       }
-    } else if (result.warnings.length > 0) {
+      continue;
+    }
+
+    if (result.warnings.length > 0) {
       console.warn(`\n⚠️  ${relativePath}`);
       for (const warning of result.warnings) {
         console.warn(`   WARN: ${warning}`);
       }
-    } else {
-      console.log(`✓ ${relativePath}`);
+      continue;
     }
 
-    return result;
-  } catch (err) {
-    console.error(`\n❌ ${relativePath}`);
-    console.error(`   PARSE ERROR: ${err.message}`);
-    return { valid: false, errors: [err.message], warnings: [] };
-  }
-}
-
-function main() {
-  console.log('Validating cluster templates...\n');
-
-  const templateFiles = [...findJsonFiles(TEMPLATES_DIR)];
-
-  let hasErrors = false;
-  let validated = 0;
-  let skipped = 0;
-
-  for (const file of templateFiles) {
-    const result = validateTemplate(file);
-    if (result.skipped) {
-      skipped++;
-    } else {
-      validated++;
-      if (!result.valid) {
-        hasErrors = true;
-      }
-    }
+    console.log(`✓ ${relativePath}`);
   }
 
   console.log(`\n${'='.repeat(60)}`);
-  console.log(`Validated: ${validated} templates, Skipped: ${skipped} files`);
+  console.log(`Validated: ${report.validated} templates, Skipped: ${report.skipped} files`);
 
   if (hasErrors) {
     console.error('\n❌ VALIDATION FAILED - Fix errors above before merging\n');
@@ -108,4 +63,7 @@ function main() {
   }
 }
 
-main();
+main().catch((err) => {
+  console.error(`\n❌ Template validation crashed: ${err.message}\n`);
+  process.exit(1);
+});

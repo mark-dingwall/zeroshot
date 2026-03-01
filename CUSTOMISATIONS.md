@@ -1,4 +1,4 @@
-# Local Customisations (on top of upstream v5.4)
+# Local Customisations (on top of upstream v5.5)
 
 Kept separate from README.md and CLAUDE.md to minimise merge pain when new releases land.
 
@@ -91,17 +91,16 @@ Worker done → IMPLEMENTATION_READY → quality-gate → pass → QUALITY_GATE_
 
 ### Other
 
-- **Model Auto-Upgrade** — models below `minLevel`/`minModel` floor are silently upgraded instead of crashing. (`src/agent-wrapper.js`, `src/providers/base-provider.js`, `lib/settings.js`)
 - **Config Validator** — `execute_system_command` awareness: `onSuccess` topic registration, `onComplete` action-type warnings, mediated feedback loop recognition, transform script scanning, crash fixes for missing `topic` field. (`src/config-validator.js`)
 
 ## Bug Fixes (on top of upstream)
 
-| Bug                                              | Root Cause                                                                                       | Fix                                                                                                    | Files                                                 |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| **Analyst context overflow** on top-tier reviews | 5-8 subagents spawned in one message exceed 200K context before auto-compaction                  | Batch spawns (max 4/message), `AUTOCOMPACT_PCT_OVERRIDE` by level (90/87/84%), output density guidance | `agent-task-executor.js:700`, base templates          |
-| **Validator infinite loop** on 0 findings        | `reviews.length > 0 &&` guard → `approved: false` on clean code (`[].every()` is vacuously true) | Removed guard from all 10 transforms across 3 templates. Also: persist `paramOverrides` on resume      | base templates, `orchestrator.js`                     |
-| **Task ID collision** on accumulated runs        | 921K ID space + no retry → birthday-paradox collision after ~960 runs                            | Expanded to 1.68B combinations + retry loop (5 attempts)                                               | `task-lib/name-generator.js`, `task-lib/runner.js:45` |
-| **CLI result envelope** in `extractDirectJson`   | `{type:"result"}` CLI wrapper mistaken for agent output                                          | Reject parsed objects with `type === 'result'`                                                         | `agent/output-extraction.js:174`                      |
+| Bug                                              | Root Cause                                                                                       | Fix                                                                                                    | Files                                        |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| **Analyst context overflow** on top-tier reviews | 5-8 subagents spawned in one message exceed 200K context before auto-compaction                  | Batch spawns (max 4/message), `AUTOCOMPACT_PCT_OVERRIDE` by level (90/87/84%), output density guidance | `agent-task-executor.js:700`, base templates |
+| **Validator infinite loop** on 0 findings        | `reviews.length > 0 &&` guard → `approved: false` on clean code (`[].every()` is vacuously true) | Removed guard from all 10 transforms across 3 templates. Also: persist `paramOverrides` on resume      | base templates, `orchestrator.js`            |
+
+_Now upstream (v5.5):_ Task ID collision fix, CLI result envelope fix, model auto-upgrade.
 
 ## CI & Branch Protection
 

@@ -351,29 +351,41 @@ evaluate(script, agent, message) {
 
 ## Debugging
 
-### Debug the TUI (zeroshot watch)
+### Debug the Rust TUI (zeroshot, zeroshot tui, zeroshot watch)
+
+Use `zeroshot` (TTY only) or `zeroshot tui` for a normal session. Use `zeroshot watch` to open Monitor view directly.
 
 1. **Run in development mode**
 
    ```bash
-   zeroshot watch
+   zeroshot tui
    ```
 
-2. **Common TUI issues**
+2. **CI note**
+
+   The Rust TUI backend integration tests require the Node TUI backend to be built.
+   CI enforces this (fails if missing). Locally, run:
+
+   ```bash
+   npm ci
+   npm run build:tui-backend
+   ```
+
+3. **Common TUI issues**
 
    | Issue              | Fix                                                   |
    | ------------------ | ----------------------------------------------------- |
    | Garbled output     | Terminal too small - resize to 80x24+                 |
    | Missing agents     | Cluster not running - start with `zeroshot run` first |
    | Stats not updating | File polling delay - wait 2-5 seconds                 |
-   | Crash on resize    | Known blessed bug - restart TUI                       |
+   | Resize glitches    | Restart TUI                                           |
 
-3. **Debug TUI rendering**
+4. **Debug TUI rendering**
 
-   Edit `src/tui/index.js` and add:
+   Edit `tui-rs/crates/zeroshot-tui/src/` (screen or widget) and add:
 
-   ```javascript
-   screen.log(`Debug: ${JSON.stringify(data)}`);
+   ```rust
+   eprintln!("Debug: {data:?}");
    ```
 
 ### Debug Agent Execution

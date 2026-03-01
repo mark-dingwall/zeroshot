@@ -105,7 +105,22 @@ function extractResultContent(obj) {
  */
 function extractFromTextEvents(output, providerName) {
   const provider = getProvider(providerName);
-  const events = parseChunkWithProvider(provider, output);
+  const normalized = output
+    .split('\n')
+    .map((line) => stripTimestamp(line))
+    .filter(Boolean)
+    .join('\n');
+  const events = parseChunkWithProvider(provider, normalized);
+
+  // Fast-path: many providers eventually emit the full JSON as a single text event.
+  // Scan from the end to find the last parseable JSON snippet without requiring
+  // the entire concatenated stream to be valid JSON.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type !== 'text' || typeof e.text !== 'string') continue;
+    const direct = extractDirectJson(e.text) || extractFromMarkdown(e.text);
+    if (direct) return direct;
+  }
 
   // Accumulate all text events
   const textEvents = events.filter((e) => e.type === 'text').map((e) => e.text);
@@ -153,8 +168,47 @@ function extractFromMarkdown(text) {
 }
 
 /**
+ * CLI metadata fields that indicate raw provider output (not agent content).
+ * These objects should be rejected - they're wrapper metadata, not actual output.
+ */
+const CLI_METADATA_FIELDS = new Set([
+  'duration_ms',
+  'duration_api_ms',
+  'total_cost_usd',
+  'session_id',
+  'num_turns',
+  'permission_denials',
+  'modelUsage',
+]);
+
+/**
+ * Check if an object looks like CLI metadata rather than agent output.
+ * CLI metadata has specific fields like duration_ms, session_id, etc.
+ *
+ * @param {object} obj - Parsed JSON object
+ * @returns {boolean} True if this looks like CLI metadata
+ */
+function isCliMetadata(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+
+  // If it has type:result, it's definitely CLI wrapper (should have been handled by extractFromResultWrapper)
+  if (obj.type === 'result') return true;
+
+  // Check for CLI-specific metadata fields
+  const keys = Object.keys(obj);
+  const metadataFieldCount = keys.filter((k) => CLI_METADATA_FIELDS.has(k)).length;
+
+  // If 2+ CLI metadata fields present, reject as CLI output
+  return metadataFieldCount >= 2;
+}
+
+/**
  * Strategy 4: Direct JSON parse
  * Handles raw JSON output (single-line or multi-line)
+ *
+ * IMPORTANT: Rejects CLI metadata objects to prevent schema validation
+ * against wrong data structure (e.g., validating {duration_ms, session_id}
+ * against agent schema expecting {summary, completionStatus}).
  *
  * @param {string} text - Text to parse
  * @returns {object|null} Parsed JSON or null
@@ -168,14 +222,79 @@ function extractDirectJson(text) {
   try {
     const parsed = JSON.parse(trimmed);
     if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      // Reject CLI result envelopes — these are never agent output.
-      // Without this guard, when a model bypasses --json-schema and returns plain text,
-      // the CLI envelope itself gets mistaken for structured agent output.
-      if (parsed.type === 'result') return null;
+      // Reject CLI metadata - this is wrapper output, not agent content
+      if (isCliMetadata(parsed)) {
+        return null;
+      }
       return parsed;
     }
   } catch {
     // Not valid JSON
+  }
+
+  return null;
+}
+
+/**
+ * Extract CLI error from provider output (all providers).
+ * Returns the error message if the CLI reported an error, null otherwise.
+ *
+ * Provider error formats:
+ * - Claude: {type:"result", is_error:true, errors:["msg"]} or {type:"result", subtype:"error"}
+ * - Codex:  {type:"turn.failed", error:{message:"msg"}}
+ * - Gemini: {type:"result", success:false, error:"msg"}
+ * - Opencode: {type:"session.error", error:{message:"msg"}}
+ *
+ * @param {string} output - Raw CLI output
+ * @returns {{error: string, provider: string}|null} Error info or null
+ */
+function extractCliError(output) {
+  if (!output || typeof output !== 'string') return null;
+
+  const lines = output.split('\n');
+
+  for (const line of lines) {
+    const content = stripTimestamp(line);
+    if (!content.startsWith('{')) continue;
+
+    let obj;
+    try {
+      obj = JSON.parse(content);
+    } catch {
+      continue;
+    }
+
+    // Claude: {type:"result", is_error:true, errors:[...]}
+    if (obj.type === 'result' && obj.is_error === true) {
+      const errorMsg = Array.isArray(obj.errors)
+        ? obj.errors.join('; ')
+        : obj.error || obj.result || 'Unknown CLI error';
+      return { error: errorMsg, provider: 'claude' };
+    }
+
+    // Claude: {type:"result", subtype:"error"}
+    if (obj.type === 'result' && obj.subtype === 'error') {
+      const errorMsg = obj.error || obj.result || 'CLI returned error';
+      return { error: errorMsg, provider: 'claude' };
+    }
+
+    // Codex: {type:"turn.failed", error:{message:"..."}}
+    if (obj.type === 'turn.failed') {
+      const errorMsg = obj.error?.message || obj.error || 'Turn failed';
+      return { error: errorMsg, provider: 'codex' };
+    }
+
+    // Gemini: {type:"result", success:false, error:"..."}
+    if (obj.type === 'result' && obj.success === false && obj.error) {
+      return { error: obj.error, provider: 'gemini' };
+    }
+
+    // Opencode: {type:"session.error", error:{...}}
+    if (obj.type === 'session.error') {
+      const errorMsg =
+        obj.error?.data?.message || obj.error?.message || obj.error?.name || 'Session error';
+      return { error: errorMsg, provider: 'opencode' };
+    }
   }
 
   return null;
@@ -239,6 +358,7 @@ function extractJsonFromOutput(output, providerName = 'claude') {
 
 module.exports = {
   extractJsonFromOutput,
+  extractCliError,
   extractFromResultWrapper,
   extractFromTextEvents,
   extractFromMarkdown,

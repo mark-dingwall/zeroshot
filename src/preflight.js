@@ -76,28 +76,50 @@ function getClaudeVersion(claudeCommand = 'claude') {
   const command = parts[0];
   const extraArgs = parts.slice(1);
 
+  // Determine CLI presence without depending on `claude --version` working.
+  // Some environments can have Claude installed but a broken/unwritable config dir,
+  // which should NOT block preflight.
+  if (!commandExists(command)) {
+    return {
+      installed: false,
+      version: null,
+      error: `Command '${command}' not installed`,
+    };
+  }
+
   try {
     const versionArgs = [...extraArgs, '--version'];
     const versionCmd = [command, ...versionArgs].join(' ');
-    const output = execSync(versionCmd, { encoding: 'utf8', stdio: 'pipe' });
+    // Claude Code may try to write debug output under CLAUDE_CONFIG_DIR even for `--version`.
+    // Preflight should detect installation, not fail due to an unwritable/invalid config dir.
+    const preflightConfigDir = path.join(os.tmpdir(), 'zeroshot-claude-preflight');
+    try {
+      fs.mkdirSync(preflightConfigDir, { recursive: true });
+    } catch {
+      // If we can't create it, fall back to current env.
+    }
+    const output = execSync(versionCmd, {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: preflightConfigDir,
+      },
+    });
     const match = output.match(/(\d+\.\d+\.\d+)/);
     return {
       installed: true,
       version: match ? match[1] : 'unknown',
       error: null,
     };
-  } catch (err) {
-    if (err.message.includes('command not found') || err.message.includes('not found')) {
-      return {
-        installed: false,
-        version: null,
-        error: `Command '${command}' not installed`,
-      };
-    }
+  } catch {
+    // The CLI exists, but the version command can still fail due to local environment
+    // (e.g. config-dir permissions). Treat this as installed with unknown version so
+    // preflight doesn't block on non-essential metadata.
     return {
-      installed: false,
-      version: null,
-      error: err.message,
+      installed: true,
+      version: 'unknown',
+      error: null,
     };
   }
 }
@@ -220,19 +242,41 @@ function checkGhAuth() {
     };
   }
 
-  // Check auth status
+  // Check auth status with timeout to prevent hangs
+  // gh auth status: exit 0 = authenticated, exit 1 = not authenticated
+  // Note: gh outputs to stderr even on success
+  const AUTH_CHECK_TIMEOUT_MS = 10000;
   try {
-    execSync('gh auth status', { encoding: 'utf8', stdio: 'pipe' });
+    execSync('gh auth status', {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: AUTH_CHECK_TIMEOUT_MS,
+    });
+    // Exit code 0 = authenticated
     return {
       installed: true,
       authenticated: true,
       error: null,
     };
   } catch (err) {
-    // gh auth status returns non-zero if not authenticated
-    const stderr = err.stderr || err.message || '';
+    const stderr = err.stderr || '';
 
-    if (stderr.includes('not logged in')) {
+    // Check if killed due to timeout
+    if (err.killed || err.signal === 'SIGTERM') {
+      return {
+        installed: true,
+        authenticated: false,
+        error: 'gh auth status timed out - try running: gh auth login',
+      };
+    }
+
+    // gh auth status returns non-zero if not authenticated
+    // Check stderr for common "not logged in" patterns
+    if (
+      stderr.includes('not logged in') ||
+      stderr.includes('not logged into') ||
+      stderr.includes('You are not logged')
+    ) {
       return {
         installed: true,
         authenticated: false,
@@ -240,10 +284,21 @@ function checkGhAuth() {
       };
     }
 
+    // But if stderr contains "Logged in", trust that (some edge cases)
+    if (stderr.includes('Logged in')) {
+      return {
+        installed: true,
+        authenticated: true,
+        error: null,
+      };
+    }
+
+    // Provide more helpful error - include actual stderr for debugging
+    const details = stderr.trim() || `Exit code ${err.status || 'unknown'}`;
     return {
       installed: true,
       authenticated: false,
-      error: stderr.trim() || 'Unknown gh auth error',
+      error: `gh auth check failed: ${details}`,
     };
   }
 }

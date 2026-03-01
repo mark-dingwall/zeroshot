@@ -5,7 +5,11 @@
  * These wrappers enforce timeouts to prevent infinite hangs.
  */
 
-const { exec: nodeExec, execSync: nodeExecSync } = require('child_process');
+const {
+  exec: nodeExec,
+  execSync: nodeExecSync,
+  spawnSync: nodeSpawnSync,
+} = require('child_process');
 
 /** Default timeout: 30 seconds */
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -85,4 +89,36 @@ function execSync(command, options = {}) {
   return nodeExecSync(command, { ...options, timeout });
 }
 
-module.exports = { exec, execSync, DEFAULT_TIMEOUT_MS };
+/**
+ * Execute a file with args as an array (no shell interpolation) with mandatory timeout.
+ * Prefer this over execSync when any argument comes from untrusted or external sources.
+ *
+ * @param {string} file - Executable to run
+ * @param {string[]} args - Arguments (never passed through a shell)
+ * @param {object} [options] - Options (timeout uses default if not specified)
+ * @returns {string} stdout
+ */
+function spawnFileSync(file, args, options = {}) {
+  const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
+
+  if (timeout <= 0) {
+    throw new Error('spawnFileSync() timeout must be > 0. Infinite waits are forbidden.');
+  }
+
+  const result = nodeSpawnSync(file, args, { encoding: 'utf8', ...options, timeout });
+
+  if (result.error) throw result.error;
+
+  if (result.status !== 0) {
+    const err = new Error(
+      result.stderr || `Command failed with exit code ${result.status}: ${file}`
+    );
+    err.status = result.status;
+    err.stderr = result.stderr;
+    throw err;
+  }
+
+  return result.stdout;
+}
+
+module.exports = { exec, execSync, spawnFileSync, DEFAULT_TIMEOUT_MS };

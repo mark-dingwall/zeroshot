@@ -370,6 +370,7 @@ describe('ensureQualityConfig', function () {
   let tmpDir;
   let projectsDir;
   let originalEnv;
+  let commandExistsStub;
 
   beforeEach(function () {
     tmpDir = makeTmpDir();
@@ -379,9 +380,16 @@ describe('ensureQualityConfig', function () {
     // Clear require caches so modules pick up new env
     delete require.cache[require.resolve('../lib/project-config')];
     delete require.cache[require.resolve('../lib/quality-detection')];
+    // Stub out LLM detection — these tests exercise heuristic logic only
+    const providerDetection = require('../lib/provider-detection');
+    commandExistsStub = sinon.stub(providerDetection, 'commandExists').returns(false);
   });
 
   afterEach(function () {
+    if (commandExistsStub) {
+      commandExistsStub.restore();
+      commandExistsStub = null;
+    }
     if (originalEnv === undefined) {
       delete process.env.ZEROSHOT_PROJECTS_DIR;
     } else {

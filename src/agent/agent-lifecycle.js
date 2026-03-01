@@ -15,6 +15,8 @@
 const { findMatchingTrigger, evaluateTrigger } = require('./agent-trigger-evaluator');
 const { executeHook } = require('./agent-hook-executor');
 const IsolationManager = require('../isolation-manager');
+const crypto = require('crypto');
+const { bufferMessage, scheduleDrain, drainBufferedMessages } = require('../message-buffer');
 const {
   analyzeProcessHealth,
   isPlatformSupported,
@@ -25,8 +27,19 @@ const { loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
 const safeExec = require('../lib/safe-exec');
 const path = require('path');
+const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
 
 const DEFAULT_VALIDATOR_IMAGE = 'zeroshot-cluster-base';
+
+class HookExecutionError extends Error {
+  constructor(message, options) {
+    super(message);
+    this.name = 'HookExecutionError';
+    this.hookFailure = true;
+    this.hookRetries = options?.hookRetries;
+    this.originalHookError = options?.originalHookError;
+  }
+}
 
 function resolveValidatorIsolationConfig(agent) {
   const config = agent.config?.isolation || {};
@@ -229,6 +242,10 @@ async function stop(agent) {
  * @param {Object} message - Incoming message
  */
 async function handleMessage(agent, message) {
+  if (!agent._bufferedMessages) {
+    agent._bufferedMessages = [];
+  }
+
   // Check if any trigger matches FIRST (before state check)
   const matchingTrigger = findMatchingTrigger({
     triggers: agent.config.triggers,
@@ -245,8 +262,16 @@ async function handleMessage(agent, message) {
     return;
   }
   if (agent.state !== 'idle') {
+    // IMPORTANT: Never drop a message that matches a trigger.
+    // Dropping validation/coordinator signals can wedge clusters in "running" state.
+    bufferMessage(agent, message);
     console.warn(
-      `[${agent.id}] ⚠️ DROPPING message (busy, state=${agent.state}): ${message.topic}`
+      `[${agent.id}] ⏸️ BUFFERING message (busy, state=${agent.state}): ${message.topic}`
+    );
+    scheduleDrain(
+      agent,
+      () => drainBufferedMessages(agent, (next) => handleMessage(agent, next), { label: 'Agent' }),
+      { label: 'Agent' }
     );
     return;
   }
@@ -429,8 +454,10 @@ async function executeTriggerAction(agent, trigger, message) {
 }
 
 /**
- * Execute claude-zeroshots with built context
- * Retries disabled by default. Set agent config `maxRetries` to enable (e.g., 3).
+ * Execute task with built context
+ * Default: uses settings.maxRetries (default 3) for exponential backoff retries.
+ * Rate limit errors (429, capacity exhausted) use longer delays (30s base).
+ * Override via agent config `maxRetries` to change retry behavior.
  * @param {AgentWrapper} agent - Agent instance
  * @param {Object} triggeringMessage - Message that triggered execution
  */
@@ -485,7 +512,7 @@ async function applyValidatorJitter(agent) {
     return;
   }
 
-  const jitterMs = Math.floor(Math.random() * 15000); // 0-15 seconds
+  const jitterMs = crypto.randomInt(0, 15000); // 0-15 seconds
   if (!agent.quiet) {
     agent._log(
       `[Agent ${agent.id}] Adding ${Math.round(jitterMs / 1000)}s jitter to prevent lock contention`
@@ -585,11 +612,13 @@ ${'='.repeat(80)}`);
       } else {
         console.error(`${'='.repeat(80)}
 `);
-        // All hook retries exhausted - throw to trigger task-level handling
-        throw new Error(
+        // All hook retries exhausted - FAIL THE CLUSTER (do NOT rerun the whole task).
+        // Retrying the task wastes tokens and cannot fix a deterministic hook/config bug.
+        throw new HookExecutionError(
           `Hook execution failed after ${hookMaxRetries} attempts. ` +
             `Task completed successfully but hook could not publish result. ` +
-            `Original error: ${hookError.message}`
+            `Original error: ${hookError.message}`,
+          { hookRetries: hookMaxRetries, originalHookError: hookError.message }
         );
       }
     }
@@ -666,7 +695,7 @@ ${'='.repeat(80)}`);
 
 async function handleLockContention() {
   // Lock contention - add significant jittered delay
-  const lockDelay = 10000 + Math.floor(Math.random() * 20000); // 10-30 seconds
+  const lockDelay = 10000 + crypto.randomInt(0, 20000); // 10-30 seconds
   console.error(
     `⚠️ Lock contention detected - waiting ${Math.round(lockDelay / 1000)}s before retry`
   );
@@ -730,6 +759,25 @@ ${'='.repeat(80)}`);
   // Non-validator agents: publish error and stop
   agent.state = 'error';
 
+  // Hook failure: fail the whole cluster so it gets stopped + persisted (prevents deadlocked "running" clusters).
+  if (error?.hookFailure) {
+    agent._publish({
+      topic: 'CLUSTER_FAILED',
+      receiver: 'broadcast',
+      content: {
+        text: `Cluster failed: onComplete hook failed for ${agent.id} - ${error.message}`,
+        data: {
+          reason: 'on_complete_hook_failed',
+          agentId: agent.id,
+          role: agent.role,
+          hookRetries: error.hookRetries ?? null,
+          originalHookError: error.originalHookError ?? null,
+          error: error.message,
+        },
+      },
+    });
+  }
+
   // Save failure info to cluster for resume capability
   agent.cluster.failureInfo = {
     agentId: agent.id,
@@ -749,6 +797,9 @@ ${'='.repeat(80)}`);
       data: {
         error: error.message,
         stack: error.stack,
+        hookFailure: error?.hookFailure === true,
+        hookRetries: error?.hookRetries ?? undefined,
+        originalHookError: error?.originalHookError ?? undefined,
         agent: agent.id,
         role: agent.role,
         iteration: agent.iteration,
@@ -783,19 +834,26 @@ ${'='.repeat(80)}`);
   agent.state = 'idle';
 }
 
-async function scheduleRetry(agent, error, attempt, maxRetries, baseDelay) {
-  const delay = baseDelay * Math.pow(2, attempt - 1); // 2s, 4s, 8s
+async function scheduleRetry(agent, error, attempt, maxRetries, _baseDelay) {
+  // Use rate-limit-aware backoff (30s+ for 429s, 2s for others)
+  const settings = loadSettings();
+  const delay = calculateRateLimitDelay(error, attempt, settings);
+  const isRateLimit = isRateLimitError(error);
 
   agent._publishLifecycle('RETRY_SCHEDULED', {
     attempt,
     maxRetries,
     delayMs: delay,
     error: error.message,
+    isRateLimitError: isRateLimit,
   });
 
-  agent._log(`[${agent.id}] ⚠️  Retrying in ${delay}ms... (${attempt + 1}/${maxRetries})`);
+  const prefix = isRateLimit ? '🔄 Rate limit - ' : '⚠️  ';
+  agent._log(
+    `[${agent.id}] ${prefix}Retrying in ${Math.round(delay / 1000)}s... (${attempt + 1}/${maxRetries})`
+  );
 
-  // Exponential backoff
+  // Rate-limit-aware backoff
   await new Promise((resolve) => setTimeout(resolve, delay));
 
   agent._log(`[${agent.id}] 🔄 Starting retry attempt ${attempt + 1}/${maxRetries}`);
@@ -817,8 +875,6 @@ async function handleTaskAttemptFailure({
 
   if (isLockError) {
     await handleLockContention();
-  } else if (attempt < maxRetries) {
-    console.error(`Will retry in ${baseDelay * Math.pow(2, attempt - 1)}ms...`);
   }
   console.error(`${'='.repeat(80)}
 `);
@@ -832,9 +888,33 @@ async function handleTaskAttemptFailure({
   return false;
 }
 
+function maybeExtendMaxRetries({
+  error,
+  attempt,
+  maxRetries,
+  sigtermRetryGranted,
+  noMessagesRetryGranted,
+}) {
+  const message = error?.message || '';
+  if (!message || attempt < maxRetries) {
+    return { maxRetries, sigtermRetryGranted, noMessagesRetryGranted };
+  }
+
+  if (message.includes('SIGTERM') && !sigtermRetryGranted) {
+    return { maxRetries: maxRetries + 1, sigtermRetryGranted: true, noMessagesRetryGranted };
+  }
+
+  if (message.toLowerCase().includes('no messages returned') && !noMessagesRetryGranted) {
+    return { maxRetries: maxRetries + 1, sigtermRetryGranted, noMessagesRetryGranted: true };
+  }
+
+  return { maxRetries, sigtermRetryGranted, noMessagesRetryGranted };
+}
+
 /**
  * Execute claude-zeroshots with built context
- * Retries disabled by default. Set agent config `maxRetries` to enable (e.g., 3).
+ * Default: uses settings.maxRetries (default 3) for exponential backoff retries.
+ * Override via agent config `maxRetries` to change retry behavior.
  * @param {AgentWrapper} agent - Agent instance
  * @param {Object} triggeringMessage - Message that triggered execution
  */
@@ -844,10 +924,11 @@ async function executeTask(agent, triggeringMessage) {
     return;
   }
 
-  // Default: no retries (maxRetries=1 means 1 attempt only)
-  // Set agent config `maxRetries: 3` to enable exponential backoff retries
-  let maxRetries = agent.config.maxRetries ?? 1;
-  const baseDelay = 2000; // 2 seconds
+  // Default: uses settings.maxRetries (default 3)
+  // Override via agent config `maxRetries` to change retry behavior
+  const settings = loadSettings();
+  let maxRetries = agent.config.maxRetries ?? settings.maxRetries ?? 3;
+  const baseDelay = settings.backoffBaseMs ?? 2000;
   let sigtermRetryGranted = false;
   let noMessagesRetryGranted = false;
 
@@ -861,17 +942,21 @@ async function executeTask(agent, triggeringMessage) {
       await runTaskAttempt(agent, triggeringMessage);
       return;
     } catch (error) {
-      const isSigterm = error.message && error.message.includes('SIGTERM');
-      const isNoMessages =
-        error.message && error.message.toLowerCase().includes('no messages returned');
-      if (isSigterm && !sigtermRetryGranted && attempt >= maxRetries) {
-        sigtermRetryGranted = true;
-        maxRetries += 1;
+      if (error instanceof HookExecutionError) {
+        // Hook failures are deterministic; do not waste tokens retrying the provider task.
+        await handleFinalFailure(agent, triggeringMessage, error, 1);
+        return;
       }
-      if (isNoMessages && !noMessagesRetryGranted && attempt >= maxRetries) {
-        noMessagesRetryGranted = true;
-        maxRetries += 1;
-      }
+      const updated = maybeExtendMaxRetries({
+        error,
+        attempt,
+        maxRetries,
+        sigtermRetryGranted,
+        noMessagesRetryGranted,
+      });
+      maxRetries = updated.maxRetries;
+      sigtermRetryGranted = updated.sigtermRetryGranted;
+      noMessagesRetryGranted = updated.noMessagesRetryGranted;
       const shouldStop = await handleTaskAttemptFailure({
         agent,
         triggeringMessage,

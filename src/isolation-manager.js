@@ -20,6 +20,7 @@ const { CLAUDE_AUTH_ENV_VARS, resolveClaudeAuth } = require('../lib/settings/cla
 const { normalizeProviderName } = require('../lib/provider-names');
 const { resolveMounts, resolveEnvs, expandEnvPatterns } = require('../lib/docker-config');
 const { getProvider } = require('./providers');
+const { readRepoSettings } = require('../lib/repo-settings');
 
 /**
  * Escape a string for safe use in shell commands
@@ -55,6 +56,7 @@ class IsolationManager {
     this.isolatedDirs = new Map(); // clusterId -> { path, originalDir }
     this.clusterConfigDirs = new Map(); // clusterId -> configDirPath
     this.worktrees = new Map(); // clusterId -> { path, branch, repoRoot }
+    this._exitWatchers = new Map(); // clusterId -> ChildProcess
   }
 
   /**
@@ -125,7 +127,44 @@ class IsolationManager {
 
     args.push('-w', '/workspace', image, 'tail', '-f', '/dev/null');
 
-    return this._spawnContainer(clusterId, args, workDir);
+    const containerId = await this._spawnContainer(clusterId, args, workDir);
+    this._watchContainerExit(clusterId, containerId, config.onExit);
+    return containerId;
+  }
+
+  _watchContainerExit(clusterId, containerId, onExit) {
+    if (typeof onExit !== 'function') {
+      return;
+    }
+
+    const existing = this._exitWatchers.get(clusterId);
+    if (existing) {
+      try {
+        existing.kill('SIGKILL');
+      } catch {
+        // Ignore
+      }
+      this._exitWatchers.delete(clusterId);
+    }
+
+    const proc = spawn('docker', ['wait', containerId], { stdio: ['ignore', 'pipe', 'ignore'] });
+    this._exitWatchers.set(clusterId, proc);
+
+    let stdout = '';
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    const finalize = () => {
+      if (this._exitWatchers.get(clusterId) === proc) {
+        this._exitWatchers.delete(clusterId);
+      }
+      const code = parseInt(stdout.trim(), 10);
+      onExit({ clusterId, containerId, exitCode: Number.isFinite(code) ? code : null });
+    };
+
+    proc.on('close', finalize);
+    proc.on('error', finalize);
   }
 
   _getRunningContainerId(clusterId) {
@@ -1256,19 +1295,19 @@ class IsolationManager {
 
   /**
    * Create worktree-based isolation for a cluster (lightweight alternative to Docker)
-   * Creates a git worktree at {os.tmpdir()}/zeroshot-worktrees/{clusterId}
+   * Creates a git worktree at ~/.zeroshot/worktrees/{clusterId}
    * @param {string} clusterId - Cluster ID
    * @param {string} workDir - Original working directory (must be a git repo)
    * @returns {{ path: string, branch: string, repoRoot: string }}
    */
-  createWorktreeIsolation(clusterId, workDir) {
+  createWorktreeIsolation(clusterId, workDir, options = {}) {
     if (!this._isGitRepo(workDir)) {
       throw new Error(
         `Worktree isolation requires a git repository. ${workDir} is not a git repo.`
       );
     }
 
-    const worktreeInfo = this.createWorktree(clusterId, workDir);
+    const worktreeInfo = this.createWorktree(clusterId, workDir, options);
     this.worktrees.set(clusterId, worktreeInfo);
 
     console.log(`[IsolationManager] Created worktree isolation at ${worktreeInfo.path}`);
@@ -1301,18 +1340,49 @@ class IsolationManager {
    * @param {string} workDir - Original working directory
    * @returns {{ path: string, branch: string, repoRoot: string }}
    */
-  createWorktree(clusterId, workDir) {
+  createWorktree(clusterId, workDir, options = {}) {
     const repoRoot = this._getGitRoot(workDir);
     if (!repoRoot) {
       throw new Error(`Cannot find git root for ${workDir}`);
+    }
+
+    // Priority: 1) options.baseRef, 2) repo settings, 3) HEAD (default)
+    let worktreeBaseRef = options.baseRef || null;
+    try {
+      const repoSettingsResult = readRepoSettings(repoRoot);
+      const repoSettings = repoSettingsResult.settings || {};
+      const candidate = repoSettings.worktree?.baseRef;
+      if (
+        !worktreeBaseRef &&
+        typeof candidate === 'string' &&
+        /^[A-Za-z0-9._/-]+$/.test(candidate.trim())
+      ) {
+        worktreeBaseRef = candidate.trim();
+      }
+    } catch {
+      // ignore
+    }
+
+    // Best-effort ensure origin/<branch> exists locally if requested.
+    if (worktreeBaseRef && worktreeBaseRef.startsWith('origin/')) {
+      const branch = worktreeBaseRef.slice('origin/'.length);
+      try {
+        execSync(`git fetch origin ${escapeShell(branch)}`, {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: 'pipe',
+        });
+      } catch {
+        // ignore
+      }
     }
 
     // Create branch name from cluster ID (e.g., cluster-cosmic-meteor-87 -> zeroshot/cosmic-meteor-87)
     const baseBranchName = `zeroshot/${clusterId.replace(/^cluster-/, '')}`;
     let branchName = baseBranchName;
 
-    // Worktree path in tmp
-    const worktreePath = path.join(os.tmpdir(), 'zeroshot-worktrees', clusterId);
+    // Worktree path in persistent location (survives reboots)
+    const worktreePath = path.join(os.homedir(), '.zeroshot', 'worktrees', clusterId);
 
     // Ensure parent directory exists
     const parentDir = path.dirname(worktreePath);
@@ -1343,7 +1413,9 @@ class IsolationManager {
       // ignore
     }
 
-    // Create worktree with new branch based on HEAD (retry on branch collision/in-use)
+    const baseRef = worktreeBaseRef || 'HEAD';
+
+    // Create worktree with new branch based on baseRef (retry on branch collision/in-use)
     for (let attempt = 0; attempt < 10; attempt++) {
       // Best-effort delete if branch exists and is not in use by another worktree.
       try {
@@ -1358,7 +1430,7 @@ class IsolationManager {
 
       try {
         execSync(
-          `git worktree add -b ${escapeShell(branchName)} ${escapeShell(worktreePath)} HEAD`,
+          `git worktree add -b ${escapeShell(branchName)} ${escapeShell(worktreePath)} ${escapeShell(baseRef)}`,
           {
             cwd: repoRoot,
             encoding: 'utf8',
@@ -1402,6 +1474,23 @@ class IsolationManager {
    * @param {boolean} [options.deleteBranch=false] - Also delete the branch
    */
   removeWorktree(worktreeInfo, _options = {}) {
+    // Tear down any Docker Compose services that may have been started in this worktree.
+    // Without this, containers keep running with host port mappings after the worktree is deleted,
+    // blocking port allocation for the main project or other worktrees.
+    const composePath = path.join(worktreeInfo.path, 'docker-compose.yml');
+    if (fs.existsSync(composePath)) {
+      try {
+        execSync('docker compose down --remove-orphans --volumes --timeout 10', {
+          cwd: worktreeInfo.path,
+          encoding: 'utf8',
+          stdio: 'pipe',
+          timeout: 30000,
+        });
+      } catch {
+        // Best-effort: compose project may not have been started, or Docker may not be running
+      }
+    }
+
     // Remove the worktree (prefer git so metadata is cleaned up).
     try {
       execSync(`git worktree remove --force ${escapeShell(worktreeInfo.path)}`, {
