@@ -77,12 +77,9 @@
         },
         "onError": {
           "action": "publish_message",
-          "config": {
-            "topic": "CONDUCTOR_ESCALATE",
-            "content": {
-              "text": "Junior conductor failed — escalating to senior",
-              "data": { "taskText": "" }
-            }
+          "transform": {
+            "engine": "javascript",
+            "script": "const original = ledger.findLast({ topic: 'ISSUE_OPENED' }); const taskText = original?.content?.text || ''; return { topic: 'CONDUCTOR_ESCALATE', content: { text: 'Junior conductor failed — escalating to senior', data: { taskText } } };"
           }
         }
       }
@@ -171,40 +168,9 @@
         },
         "onError": {
           "action": "publish_message",
-          "config": {
-            "topic": "CLUSTER_OPERATIONS",
-            "content": {
-              "text": "[CODE-REVIEW:BOOK] Senior conductor failed — falling back to book tier",
-              "data": {
-                "operations": [
-                  {
-                    "action": "load_config",
-                    "config": {
-                      "base": "code-review-workflow",
-                      "params": {
-                        "tier": "book",
-                        "analyst_level": "level2",
-                        "validator_level": "level2",
-                        "validator_count": 2,
-                        "max_iterations": 4,
-                        "max_tokens": 150000,
-                        "change_scope": "PATCH",
-                        "risk_domain": "SENSITIVE",
-                        "has_security_surface": false,
-                        "has_test_changes": false,
-                        "has_api_changes": false
-                      }
-                    }
-                  },
-                  {
-                    "action": "publish",
-                    "topic": "ISSUE_OPENED",
-                    "content": { "text": "" },
-                    "metadata": { "_republished": true }
-                  }
-                ]
-              }
-            }
+          "transform": {
+            "engine": "javascript",
+            "script": "const original = ledger.findLast({ topic: 'ISSUE_OPENED' }); const taskText = original?.content?.text || ''; if (!taskText || !taskText.trim()) throw new Error('Both conductors failed and original task text unrecoverable — aborting'); return { topic: 'CLUSTER_OPERATIONS', content: { text: '[CODE-REVIEW:BOOK] Senior conductor failed — falling back to book tier', data: { operations: [ { action: 'load_config', config: { base: 'code-review-workflow', params: { tier: 'book', analyst_level: 'level2', validator_level: 'level2', validator_count: 2, max_iterations: 4, max_tokens: 150000, change_scope: 'PATCH', risk_domain: 'SENSITIVE', has_security_surface: false, has_test_changes: false, has_api_changes: false } } }, { action: 'publish', topic: 'ISSUE_OPENED', content: { text: taskText }, metadata: { _republished: true } } ] } } };"
           }
         }
       }

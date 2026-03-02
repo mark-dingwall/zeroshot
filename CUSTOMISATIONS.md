@@ -59,6 +59,29 @@ Tier configs: `cluster-templates/{docs-review,code-review}-{tier}.json`, `cluste
 Conductors: `cluster-templates/{docs-review,code-review,doc-draft}-conductor.json`
 Scripts: `scripts/write-review-report.js`, `scripts/assemble-doc.js`, `scripts/build-revision-context.js`, `scripts/lib/doc-reconstruction.js`, `scripts/lib/ledger-helpers.js`
 
+### Intentional Differences Between Families
+
+These differences look inconsistent but are warranted by domain semantics. Do NOT standardize.
+
+| Aspect                      | Code Review                                              | Doc Draft                                      | Docs Review                     | Why Different                                                                                                                                                                     |
+| --------------------------- | -------------------------------------------------------- | ---------------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Verdicts**                | ACCEPT/ACCEPT_WITH_NOTES/DOWNGRADE/REJECT/NEEDS_EVIDENCE | ACCEPT/APPROVE_WITH_NOTES/REVISE/REJECT        | Same as code-review             | Finding-based reviews need DOWNGRADE (severity recalibration) + NEEDS_EVIDENCE. Section-based docs need REVISE (fix the content).                                                 |
+| **Refinement**              | Monotonic (no new findings)                              | Non-monotonic delta (SPLIT/MERGE/RESTRUCTURE)  | Monotonic                       | Review scope is fixed; document structure evolves.                                                                                                                                |
+| **Post-validation**         | Raw VALIDATION_RESULT → analyst                          | revision-preparer → REVISION_CONTEXT → drafter | Raw VALIDATION_RESULT → analyst | Doc-draft delta model makes it hard to reconstruct current state from raw messages. Reviews don't need this — findings are self-contained.                                        |
+| **Classification 1st axis** | ChangeScope (PATCH/MODULE/CROSS_CUTTING)                 | DocumentIntent (INFORMATIONAL/ACTIONABLE)      | ArtifactScope (SINGLE/CHAIN)    | Inputs are fundamentally different: code diffs vs document briefs vs design artifacts.                                                                                            |
+| **Conductor junior level**  | level2                                                   | level1                                         | level2                          | Doc-draft classification (2 binary fields) is simpler than code-review (6-field output including boolean detection) or docs-review (4-field output with artifact type detection). |
+| **Conductor fallback**      | BOOK (middle)                                            | LENS (middle)                                  | VECTOR (middle)                 | All use middle tier — safe default that balances coverage vs cost.                                                                                                                |
+
+## v5.5 Upstream Features Adopted
+
+### Guidance Queue
+
+Mid-run user steering for any agent via `zeroshot attach <id>`. Already wired into `_buildContext()` in `src/agent-wrapper.js` — works for all workflows without template changes.
+
+### STATE_SNAPSHOT for Validators
+
+All fork validators (code-review, docs-review, doc-draft) include `STATE_SNAPSHOT` at `priority: "medium"` in their `contextStrategy.sources`. This gives validators iteration-awareness: on round 2+ they see what the previous round's validation flagged, without blocking on the asynchronous snapshotter. Analysts/synthesizers are excluded — they need finding-level detail or full message history respectively.
+
 ## Platform Additions
 
 ### Parameterised Templates
