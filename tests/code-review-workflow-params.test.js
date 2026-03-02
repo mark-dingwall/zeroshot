@@ -182,6 +182,31 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
       }
     });
 
+    it('all validators include STATE_SNAPSHOT at medium priority', function () {
+      const resolved = resolveWorkflow();
+      const validators = resolved.agents.filter((a) => a.role === 'validator');
+      for (const v of validators) {
+        const sources = v.contextStrategy.sources;
+        const snapshot = sources.find((s) => s.topic === 'STATE_SNAPSHOT');
+        assert.ok(snapshot, `${v.id} should include STATE_SNAPSHOT source`);
+        assert.strictEqual(
+          snapshot.priority,
+          'medium',
+          `${v.id} STATE_SNAPSHOT should be medium priority`
+        );
+        assert.strictEqual(snapshot.strategy, 'latest');
+        assert.strictEqual(snapshot.amount, 1);
+      }
+    });
+
+    it('analyst does NOT include STATE_SNAPSHOT', function () {
+      const resolved = resolveWorkflow();
+      const analyst = resolved.agents.find((a) => a.id === 'analyst');
+      const sources = analyst.contextStrategy.sources;
+      const snapshot = sources.find((s) => s.topic === 'STATE_SNAPSHOT');
+      assert.ok(!snapshot, 'analyst should not include STATE_SNAPSHOT source');
+    });
+
     it('all validators include ACCEPT_WITH_NOTES and DOWNGRADE in verdict enum', function () {
       const resolved = resolveWorkflow();
       const validators = resolved.agents.filter((a) => a.role === 'validator');
