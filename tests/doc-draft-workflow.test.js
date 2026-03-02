@@ -170,6 +170,32 @@ describe('Doc Draft Workflow — Template Resolution', function () {
       assert.strictEqual(cd.role, 'orchestrator');
     });
 
+    it('all validators include STATE_SNAPSHOT at medium priority', function () {
+      const resolved = resolveWorkflow({ validator_count: 3, has_action_items: true });
+      const validators = resolved.agents.filter((a) => a.role === 'validator');
+      assert.strictEqual(validators.length, 4, 'Should have all 4 validators active');
+      for (const v of validators) {
+        const sources = v.contextStrategy.sources;
+        const snapshot = sources.find((s) => s.topic === 'STATE_SNAPSHOT');
+        assert.ok(snapshot, `${v.id} should include STATE_SNAPSHOT source`);
+        assert.strictEqual(
+          snapshot.priority,
+          'medium',
+          `${v.id} STATE_SNAPSHOT should be medium priority`
+        );
+        assert.strictEqual(snapshot.strategy, 'latest');
+        assert.strictEqual(snapshot.amount, 1);
+      }
+    });
+
+    it('drafter does NOT include STATE_SNAPSHOT', function () {
+      const resolved = resolveWorkflow();
+      const drafter = resolved.agents.find((a) => a.id === 'drafter');
+      const sources = drafter.contextStrategy.sources;
+      const snapshot = sources.find((s) => s.topic === 'STATE_SNAPSHOT');
+      assert.ok(!snapshot, 'drafter should not include STATE_SNAPSHOT source');
+    });
+
     it('drafter maxIterations resolves from params', function () {
       const resolved = resolveWorkflow({ max_iterations: 5 });
       const drafter = resolved.agents.find((a) => a.id === 'drafter');

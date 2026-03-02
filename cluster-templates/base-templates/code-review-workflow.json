@@ -341,6 +341,12 @@
             "amount": 1
           },
           {
+            "topic": "STATE_SNAPSHOT",
+            "priority": "medium",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
             "topic": "IMPLEMENTATION_READY",
             "priority": "high",
             "since": "last_agent_start",
@@ -439,6 +445,12 @@
           {
             "topic": "ISSUE_OPENED",
             "priority": "required",
+            "strategy": "latest",
+            "amount": 1
+          },
+          {
+            "topic": "STATE_SNAPSHOT",
+            "priority": "medium",
             "strategy": "latest",
             "amount": 1
           },
