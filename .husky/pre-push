@@ -17,25 +17,7 @@ while read local_ref local_sha remote_ref remote_sha; do
   # Extract branch name from remote ref (refs/heads/main → main)
   remote_branch=$(echo "$remote_ref" | sed 's|refs/heads/||')
 
-  # Block pushes to main
-  if [ "$remote_branch" = "main" ]; then
-    echo ""
-    echo "╔═══════════════════════════════════════════════════════════════════╗"
-    echo "║                                                                   ║"
-    echo "║  ❌ BLOCKED: Direct push to 'main' branch                         ║"
-    echo "║                                                                   ║"
-    echo "╚═══════════════════════════════════════════════════════════════════╝"
-    echo ""
-    echo "❌ ERROR: You cannot push directly to 'main' branch"
-    echo ""
-    echo "Required workflow:"
-    echo "  1. Create feature branch: git switch -c feat/my-feature"
-    echo "  2. Push feature branch:   git push -u origin feat/my-feature"
-    echo "  3. Create PR:             gh pr create --base main"
-    echo "  4. Enable auto-merge:     gh pr merge --auto --squash"
-    echo ""
-    exit 1
-  fi
+  # Direct pushes to main are allowed (personal fork, solo workflow)
 done < /dev/stdin
 
 # ============================================================================
