@@ -346,3 +346,7 @@ Clusters survive crashes. Resume: `zeroshot resume <id>`
 | ------------------------- | ----------------------------------------------------- |
 | No global mutable state   | Agents run in parallel. Globals = race conditions.    |
 | Never block on user input | Agents are non-interactive. Blocking = stuck forever. |
+
+## TODO
+
+- Investigate standardising the conductor classification pattern (2D matrix → boolean flags → conditional agent activation) across doc-gen, code-review, and docs-review systems, or document why per-system variations are intentional.

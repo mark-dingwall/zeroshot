@@ -53,7 +53,7 @@ class TemplateResolver {
     if (resolved.agents) {
       resolved.agents = resolved.agents.filter((/** @type {any} */ agent) => {
         if (!agent.condition) return true;
-        const conditionMet = this._evaluateCondition(agent.condition, params);
+        const conditionMet = this._evaluateCondition(agent.condition, paramsWithDefaults);
         delete agent.condition; // Remove condition field from final output
         return conditionMet;
       });
