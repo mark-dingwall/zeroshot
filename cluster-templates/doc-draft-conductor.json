@@ -58,12 +58,9 @@
         },
         "onError": {
           "action": "publish_message",
-          "config": {
-            "topic": "CONDUCTOR_ESCALATE",
-            "content": {
-              "text": "Junior conductor failed — escalating to senior",
-              "data": { "taskText": "" }
-            }
+          "transform": {
+            "engine": "javascript",
+            "script": "const original = ledger.findLast({ topic: 'ISSUE_OPENED' }); const taskText = original?.content?.text || ''; return { topic: 'CONDUCTOR_ESCALATE', content: { text: 'Junior conductor failed — escalating to senior', data: { taskText } } };"
           }
         }
       }
@@ -131,40 +128,14 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const { documentIntent, contentDomain, reasoning } = result;\n\nlet taskText = triggeringMessage.content?.data?.taskText || '';\nif (!taskText) {\n  taskText = triggeringMessage.content?.text || '';\n}\nif (!taskText) {\n  const publishOp = triggeringMessage.content?.data?.operations?.find(op => op.action === 'publish');\n  taskText = publishOp?.content?.text || '';\n}\n\nconst getTier = () => {\n  if (documentIntent === 'ACTIONABLE' && contentDomain === 'SENSITIVE') return 'prism';\n  if (documentIntent === 'ACTIONABLE' || contentDomain === 'SENSITIVE') return 'lens';\n  return 'facet';\n};\n\nconst tier = getTier();\nconst tierParams = {\n  facet: { drafter_level: 'level2', validator_count: 1, max_iterations: 3, max_tokens: 100000 },\n  lens:  { drafter_level: 'level2', validator_count: 2, max_iterations: 4, max_tokens: 150000 },\n  prism: { drafter_level: 'level3', validator_count: 3, max_iterations: 5, max_tokens: 150000 }\n};\n\nconst has_action_items = documentIntent === 'ACTIONABLE';\n\nconst config = {\n  base: 'doc-draft-workflow',\n  params: {\n    tier,\n    ...tierParams[tier],\n    has_action_items\n  }\n};\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: `Senior: [DOC:${tier.toUpperCase()}] ${reasoning}`,\n    data: {\n      operations: [\n        { action: 'load_config', config },\n        { action: 'publish', topic: 'ISSUE_OPENED', content: { text: taskText }, metadata: { _republished: true } }\n      ]\n    }\n  }\n};"
+            "script": "const { documentIntent, contentDomain, reasoning } = result;\n\nconst original = ledger.findLast({ topic: 'ISSUE_OPENED' });\nlet taskText = original?.content?.text || '';\nif (!taskText || !taskText.trim()) throw new Error('Senior conductor could not recover task text — aborting to prevent drafting from empty brief');\n\nconst getTier = () => {\n  if (documentIntent === 'ACTIONABLE' && contentDomain === 'SENSITIVE') return 'prism';\n  if (documentIntent === 'ACTIONABLE' || contentDomain === 'SENSITIVE') return 'lens';\n  return 'facet';\n};\n\nconst tier = getTier();\nconst tierParams = {\n  facet: { drafter_level: 'level2', validator_count: 1, max_iterations: 3, max_tokens: 100000 },\n  lens:  { drafter_level: 'level2', validator_count: 2, max_iterations: 4, max_tokens: 150000 },\n  prism: { drafter_level: 'level3', validator_count: 3, max_iterations: 5, max_tokens: 150000 }\n};\n\nconst has_action_items = documentIntent === 'ACTIONABLE';\n\nconst config = {\n  base: 'doc-draft-workflow',\n  params: {\n    tier,\n    ...tierParams[tier],\n    has_action_items\n  }\n};\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: `Senior: [DOC:${tier.toUpperCase()}] ${reasoning}`,\n    data: {\n      operations: [\n        { action: 'load_config', config },\n        { action: 'publish', topic: 'ISSUE_OPENED', content: { text: taskText }, metadata: { _republished: true } }\n      ]\n    }\n  }\n};"
           }
         },
         "onError": {
           "action": "publish_message",
-          "config": {
-            "topic": "CLUSTER_OPERATIONS",
-            "content": {
-              "text": "[DOC:LENS] Senior conductor failed — falling back to lens tier",
-              "data": {
-                "operations": [
-                  {
-                    "action": "load_config",
-                    "config": {
-                      "base": "doc-draft-workflow",
-                      "params": {
-                        "tier": "lens",
-                        "drafter_level": "level2",
-                        "validator_count": 2,
-                        "max_iterations": 4,
-                        "max_tokens": 150000,
-                        "has_action_items": false
-                      }
-                    }
-                  },
-                  {
-                    "action": "publish",
-                    "topic": "ISSUE_OPENED",
-                    "content": { "text": "" },
-                    "metadata": { "_republished": true }
-                  }
-                ]
-              }
-            }
+          "transform": {
+            "engine": "javascript",
+            "script": "const original = ledger.findLast({ topic: 'ISSUE_OPENED' }); const taskText = original?.content?.text || ''; if (!taskText || !taskText.trim()) throw new Error('Both conductors failed and original task text unrecoverable — aborting'); return { topic: 'CLUSTER_OPERATIONS', content: { text: '[DOC:LENS] Senior conductor failed — falling back to lens tier', data: { operations: [ { action: 'load_config', config: { base: 'doc-draft-workflow', params: { tier: 'lens', drafter_level: 'level2', validator_count: 2, max_iterations: 4, max_tokens: 150000, has_action_items: false } } }, { action: 'publish', topic: 'ISSUE_OPENED', content: { text: taskText }, metadata: { _republished: true } } ] } } };"
           }
         }
       }

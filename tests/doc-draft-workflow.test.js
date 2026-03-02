@@ -712,9 +712,61 @@ describe('Doc Draft Conductor — Config Validation', function () {
 
   it('senior onError falls back to lens tier with has_action_items: false', function () {
     const senior = conductorConfig.agents.find((a) => a.id === 'senior-doc-conductor');
-    const fallbackConfig = senior.hooks.onError.config.content.data.operations[0].config;
-    assert.strictEqual(fallbackConfig.params.tier, 'lens');
-    assert.strictEqual(fallbackConfig.params.has_action_items, false);
+    const script = senior.hooks.onError.transform.script;
+    assert.ok(script.includes("tier: 'lens'"), 'Should fall back to lens tier');
+    assert.ok(script.includes('has_action_items: false'), 'Should set has_action_items: false');
+  });
+
+  it('junior onError is a transform (not static config)', function () {
+    const junior = conductorConfig.agents.find((a) => a.id === 'junior-doc-conductor');
+    assert.ok(junior.hooks.onError.transform, 'Junior onError should use transform');
+    assert.ok(!junior.hooks.onError.config, 'Junior onError should not use static config');
+  });
+
+  it('junior onError transform accesses ledger for taskText recovery', function () {
+    const junior = conductorConfig.agents.find((a) => a.id === 'junior-doc-conductor');
+    const script = junior.hooks.onError.transform.script;
+    assert.ok(script.includes('ledger.findLast'), 'Should use ledger.findLast to recover taskText');
+    assert.ok(script.includes('ISSUE_OPENED'), 'Should look up ISSUE_OPENED topic');
+  });
+
+  it('senior onError is a transform (not static config)', function () {
+    const senior = conductorConfig.agents.find((a) => a.id === 'senior-doc-conductor');
+    assert.ok(senior.hooks.onError.transform, 'Senior onError should use transform');
+    assert.ok(!senior.hooks.onError.config, 'Senior onError should not use static config');
+  });
+
+  it('senior onError transform accesses ledger and guards empty taskText', function () {
+    const senior = conductorConfig.agents.find((a) => a.id === 'senior-doc-conductor');
+    const script = senior.hooks.onError.transform.script;
+    assert.ok(script.includes('ledger.findLast'), 'Should use ledger.findLast to recover taskText');
+    assert.ok(script.includes('throw new Error'), 'Should throw on unrecoverable taskText');
+  });
+
+  it('senior onComplete transform uses ledger lookup (not fallback chain)', function () {
+    const senior = conductorConfig.agents.find((a) => a.id === 'senior-doc-conductor');
+    const script = senior.hooks.onComplete.transform.script;
+    assert.ok(
+      script.includes('ledger.findLast'),
+      'Should use ledger.findLast for taskText recovery'
+    );
+    assert.ok(
+      !script.includes('triggeringMessage.content?.data?.taskText'),
+      'Should not use old fallback chain path 1'
+    );
+    assert.ok(
+      !script.includes("operations?.find(op => op.action === 'publish')"),
+      'Should not use old fallback chain path 3'
+    );
+  });
+
+  it('senior onComplete transform guards empty taskText', function () {
+    const senior = conductorConfig.agents.find((a) => a.id === 'senior-doc-conductor');
+    const script = senior.hooks.onComplete.transform.script;
+    assert.ok(
+      script.includes('throw new Error'),
+      'Should throw when taskText is empty to prevent drafting from empty brief'
+    );
   });
 
   it('junior uses level1 model, senior uses level2', function () {
