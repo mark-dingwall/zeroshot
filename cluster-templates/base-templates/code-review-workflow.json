@@ -663,10 +663,6 @@
       "triggers": [
         {
           "topic": "ISSUE_OPENED",
-          "logic": {
-            "engine": "javascript",
-            "script": "return !(message && message.metadata && message.metadata._republished);"
-          },
           "action": "execute_system_command",
           "config": {
             "command": "node $ZEROSHOT_ROOT/scripts/quality-gate-runner.js",
