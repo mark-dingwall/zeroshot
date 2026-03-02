@@ -513,3 +513,229 @@ describe('Direct-Routed Doc Configs — Parameter Validation', function () {
     }
   });
 });
+
+describe('Doc Draft Workflow — Expanded Document Types', function () {
+  let resolver;
+
+  before(function () {
+    const templatesDir = path.join(__dirname, '..', 'cluster-templates');
+    resolver = new TemplateResolver(templatesDir);
+  });
+
+  function resolveWorkflow(overrides = {}) {
+    return resolver.resolve('doc-draft-workflow', {
+      tier: 'lens',
+      drafter_level: 'level2',
+      validator_count: 2,
+      max_iterations: 4,
+      max_tokens: 150000,
+      has_action_items: false,
+      ...overrides,
+    });
+  }
+
+  it('drafter jsonSchema enum includes all 9 document types', function () {
+    const resolved = resolveWorkflow();
+    const drafter = resolved.agents.find((a) => a.id === 'drafter');
+    const docTypeEnum = drafter.jsonSchema.properties.document.properties.documentType.enum;
+    const expected = [
+      'CHECKLIST',
+      'GUIDE',
+      'SPECIFICATION',
+      'PLAN',
+      'QUESTIONNAIRE',
+      'REQUIREMENTS',
+      'ACCEPTANCE_CRITERIA',
+      'TEST_PLAN',
+      'OTHER',
+    ];
+    assert.deepStrictEqual(docTypeEnum, expected);
+  });
+
+  it('drafter prompt contains Questionnaires perspective section', function () {
+    const resolved = resolveWorkflow();
+    const drafter = resolved.agents.find((a) => a.id === 'drafter');
+    assert.ok(
+      drafter.prompt.initial.includes('### Questionnaires'),
+      'Should contain ### Questionnaires section'
+    );
+    assert.ok(
+      drafter.prompt.initial.includes('Stakeholder Mapper'),
+      'Should contain Stakeholder Mapper perspective'
+    );
+  });
+
+  it('drafter prompt contains Requirements perspective section', function () {
+    const resolved = resolveWorkflow();
+    const drafter = resolved.agents.find((a) => a.id === 'drafter');
+    assert.ok(
+      drafter.prompt.initial.includes('### Requirements'),
+      'Should contain ### Requirements section'
+    );
+    assert.ok(
+      drafter.prompt.initial.includes('Functional Requirements Analyst'),
+      'Should contain Functional Requirements Analyst perspective'
+    );
+  });
+
+  it('drafter prompt contains Acceptance Criteria perspective section', function () {
+    const resolved = resolveWorkflow();
+    const drafter = resolved.agents.find((a) => a.id === 'drafter');
+    assert.ok(
+      drafter.prompt.initial.includes('### Acceptance Criteria'),
+      'Should contain ### Acceptance Criteria section'
+    );
+    assert.ok(
+      drafter.prompt.initial.includes('Scenario Writer'),
+      'Should contain Scenario Writer perspective'
+    );
+  });
+
+  it('drafter prompt contains Test Plans perspective section', function () {
+    const resolved = resolveWorkflow();
+    const drafter = resolved.agents.find((a) => a.id === 'drafter');
+    assert.ok(
+      drafter.prompt.initial.includes('### Test Plans'),
+      'Should contain ### Test Plans section'
+    );
+    assert.ok(
+      drafter.prompt.initial.includes('Coverage Strategist'),
+      'Should contain Coverage Strategist perspective'
+    );
+  });
+
+  it('drafter prompt includes mandatory perspectives directive for has_action_items', function () {
+    const resolved = resolveWorkflow({ has_action_items: true });
+    const drafter = resolved.agents.find((a) => a.id === 'drafter');
+    assert.ok(
+      drafter.prompt.initial.includes('MANDATORY'),
+      'Should contain MANDATORY directive when has_action_items is true'
+    );
+    assert.ok(
+      drafter.prompt.initial.includes('actionable items requiring atomic'),
+      'Should explain why action perspectives are mandatory'
+    );
+  });
+
+  it('drafter prompt intro mentions new document types', function () {
+    const resolved = resolveWorkflow();
+    const drafter = resolved.agents.find((a) => a.id === 'drafter');
+    assert.ok(
+      drafter.prompt.initial.includes('questionnaire'),
+      'Should mention questionnaire in document type list'
+    );
+    assert.ok(
+      drafter.prompt.initial.includes('acceptance criteria'),
+      'Should mention acceptance criteria in document type list'
+    );
+    assert.ok(
+      drafter.prompt.initial.includes('test plan'),
+      'Should mention test plan in document type list'
+    );
+  });
+});
+
+describe('Doc Draft Conductor — Config Validation', function () {
+  const templatesDir = path.join(__dirname, '..', 'cluster-templates');
+  let conductorConfig;
+
+  before(function () {
+    const configPath = path.join(templatesDir, 'doc-draft-conductor.json');
+    conductorConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  });
+
+  it('loads without JSON parse errors', function () {
+    assert.ok(conductorConfig.name);
+    assert.ok(conductorConfig.agents.length === 2);
+  });
+
+  it('junior conductor classifies on DocumentIntent x ContentDomain', function () {
+    const junior = conductorConfig.agents.find((a) => a.id === 'junior-doc-conductor');
+    assert.ok(junior, 'Junior conductor exists');
+    assert.deepStrictEqual(junior.jsonSchema.properties.documentIntent.enum, [
+      'INFORMATIONAL',
+      'ACTIONABLE',
+      'UNCERTAIN',
+    ]);
+    assert.deepStrictEqual(junior.jsonSchema.properties.contentDomain.enum, [
+      'GENERAL',
+      'SENSITIVE',
+      'UNCERTAIN',
+    ]);
+  });
+
+  it('senior conductor has no UNCERTAIN option', function () {
+    const senior = conductorConfig.agents.find((a) => a.id === 'senior-doc-conductor');
+    assert.ok(senior, 'Senior conductor exists');
+    assert.deepStrictEqual(senior.jsonSchema.properties.documentIntent.enum, [
+      'INFORMATIONAL',
+      'ACTIONABLE',
+    ]);
+    assert.deepStrictEqual(senior.jsonSchema.properties.contentDomain.enum, [
+      'GENERAL',
+      'SENSITIVE',
+    ]);
+  });
+
+  it('junior conductor trigger excludes republished messages', function () {
+    const junior = conductorConfig.agents.find((a) => a.id === 'junior-doc-conductor');
+    const trigger = junior.triggers.find((t) => t.topic === 'ISSUE_OPENED');
+    assert.ok(trigger.logic, 'Should have logic script');
+    assert.ok(trigger.logic.script.includes('!message.metadata?._republished'));
+  });
+
+  it('junior transform routes to doc-draft-workflow base', function () {
+    const junior = conductorConfig.agents.find((a) => a.id === 'junior-doc-conductor');
+    const script = junior.hooks.onComplete.transform.script;
+    assert.ok(script.includes("base: 'doc-draft-workflow'"));
+  });
+
+  it('junior transform derives has_action_items from ACTIONABLE intent', function () {
+    const junior = conductorConfig.agents.find((a) => a.id === 'junior-doc-conductor');
+    const script = junior.hooks.onComplete.transform.script;
+    assert.ok(script.includes("documentIntent === 'ACTIONABLE'"));
+    assert.ok(script.includes('has_action_items'));
+  });
+
+  it('junior transform escalates UNCERTAIN to senior', function () {
+    const junior = conductorConfig.agents.find((a) => a.id === 'junior-doc-conductor');
+    const script = junior.hooks.onComplete.transform.script;
+    assert.ok(script.includes("topic: 'CONDUCTOR_ESCALATE'"));
+    assert.ok(script.includes("=== 'UNCERTAIN'"));
+  });
+
+  it('senior transform routes to doc-draft-workflow base', function () {
+    const senior = conductorConfig.agents.find((a) => a.id === 'senior-doc-conductor');
+    const script = senior.hooks.onComplete.transform.script;
+    assert.ok(script.includes("base: 'doc-draft-workflow'"));
+  });
+
+  it('senior onError falls back to lens tier with has_action_items: false', function () {
+    const senior = conductorConfig.agents.find((a) => a.id === 'senior-doc-conductor');
+    const fallbackConfig = senior.hooks.onError.config.content.data.operations[0].config;
+    assert.strictEqual(fallbackConfig.params.tier, 'lens');
+    assert.strictEqual(fallbackConfig.params.has_action_items, false);
+  });
+
+  it('junior uses level1 model, senior uses level2', function () {
+    const junior = conductorConfig.agents.find((a) => a.id === 'junior-doc-conductor');
+    const senior = conductorConfig.agents.find((a) => a.id === 'senior-doc-conductor');
+    assert.strictEqual(junior.modelLevel, 'level1');
+    assert.strictEqual(senior.modelLevel, 'level2');
+  });
+
+  it('senior triggers on CONDUCTOR_ESCALATE and CLUSTER_OPERATIONS_VALIDATION_FAILED', function () {
+    const senior = conductorConfig.agents.find((a) => a.id === 'senior-doc-conductor');
+    const topics = senior.triggers.map((t) => t.topic).sort();
+    assert.deepStrictEqual(topics, ['CLUSTER_OPERATIONS_VALIDATION_FAILED', 'CONDUCTOR_ESCALATE']);
+  });
+
+  it('junior transform sets correct tier params for each routing combination', function () {
+    const junior = conductorConfig.agents.find((a) => a.id === 'junior-doc-conductor');
+    const script = junior.hooks.onComplete.transform.script;
+    // Verify tier routing logic exists
+    assert.ok(script.includes("return 'prism'"), 'ACTIONABLE+SENSITIVE should route to prism');
+    assert.ok(script.includes("return 'lens'"), 'Mixed should route to lens');
+    assert.ok(script.includes("return 'facet'"), 'INFORMATIONAL+GENERAL should route to facet');
+  });
+});

@@ -20,7 +20,7 @@ Three systems sharing a common pipeline: router → analysts (parallel subagents
 |                    | Lens   | `doc-lens`           | 3-5                | 2          | 4     | L2    | 150k   |
 |                    | Prism  | `doc-prism`          | 5-8                | 3          | 5     | L3    | 150k   |
 
-Auto-classifying conductors: `docs-review-conductor`, `code-review-conductor`. Doc generation has no conductor yet.
+Auto-classifying conductors: `docs-review-conductor`, `code-review-conductor`, `doc-draft-conductor` (DocumentIntent x ContentDomain).
 
 ```bash
 # Fixed tier (or use zs alias: zs trace, zs vector, zs bell, zs facet, etc.)
@@ -28,9 +28,10 @@ zeroshot run "Review these requirements" --config docs-review-trace
 zeroshot run "review my changes" --config code-review-bell
 zeroshot run "Draft a migration checklist" --config doc-facet
 
-# Auto-classify
+# Auto-classify (or use zs alias: zs docs-review, zs code-review, zs doc-gen)
 zeroshot run "Review this" --config docs-review-conductor
 zeroshot run "review my changes" --config code-review-conductor
+zeroshot run "Generate acceptance criteria for login" --config doc-draft-conductor
 ```
 
 ### Code Review Classification
@@ -43,6 +44,8 @@ The conductor classifies on **ChangeScope** x **RiskDomain**: PATCH/GENERAL → 
 
 ### Document Generation Pipeline
 
+Supports 9 document types: CHECKLIST, GUIDE, SPECIFICATION, PLAN, QUESTIONNAIRE, REQUIREMENTS, ACCEPTANCE_CRITERIA, TEST_PLAN, OTHER. The `doc-draft-conductor` classifies on DocumentIntent (INFORMATIONAL/ACTIONABLE) x ContentDomain (GENERAL/SENSITIVE) to select tier and set `has_action_items` for actionability validation.
+
 Extends shared pipeline with a revision-preparer stage:
 
 1. **Router** → 2. **Drafter** (all perspectives in parallel; full doc on iter 1, delta on iter 2+) → 3. **Validators** (per-section: ACCEPT/APPROVE_WITH_NOTES/REVISE/REJECT) → 4. **Revision preparer** (`build-revision-context.js` via `execute_system_command`, publishes trimmed REVISION_CONTEXT) → 5. **Completion detector** → 6. **Assembly** (`assemble-doc.js`, reconstructs + renumbers sections, APPROVE_WITH_NOTES appendix)
@@ -53,7 +56,7 @@ Extends shared pipeline with a revision-preparer stage:
 
 Base templates: `cluster-templates/base-templates/{docs-review,code-review,doc-draft}-workflow.json`
 Tier configs: `cluster-templates/{docs-review,code-review}-{tier}.json`, `cluster-templates/doc-{tier}.json`
-Conductors: `cluster-templates/{docs-review,code-review}-conductor.json`
+Conductors: `cluster-templates/{docs-review,code-review,doc-draft}-conductor.json`
 Scripts: `scripts/write-review-report.js`, `scripts/assemble-doc.js`, `scripts/build-revision-context.js`, `scripts/lib/doc-reconstruction.js`, `scripts/lib/ledger-helpers.js`
 
 ## Platform Additions
@@ -123,5 +126,7 @@ GitHub ruleset on `main`: require PRs (0 approvals), require status checks (`che
 ## Known Issues
 
 - **#1B** — `context-pack-builder.js` coerces numeric values to strings (upstream, untouched)
-- **#11** — Max iterations CLUSTER_FAILED race: `handleMaxIterations` stop() could kill synthesis on same tick
-- **#14** — `_evaluateCondition` uses raw `params` instead of `paramsWithDefaults` (`template-resolver.js:56`)
+
+_Fixed in fork:_ `_evaluateCondition` now uses `paramsWithDefaults` instead of raw `params` (#14, `template-resolver.js:56`).
+
+_Fixed upstream (v5.5):_ Task ID collision fix, CLI result envelope fix, model auto-upgrade, max iterations CLUSTER_FAILED race (#11 — `handleMaxIterations` now uses correct `<` comparison, `agent-lifecycle.js:464`).
