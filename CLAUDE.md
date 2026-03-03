@@ -207,6 +207,45 @@ Classifies tasks on **Complexity × TaskType**, routes to parameterized template
 
 **Base templates:** `single-worker`, `worker-validator`, `debug-workflow`, `full-workflow`
 
+### Fork Conductor Configs
+
+| System             | Tier   | Config               | Analysts           | Validators | Iters | Level | Tokens |
+| ------------------ | ------ | -------------------- | ------------------ | ---------- | ----- | ----- | ------ |
+| **Design review**  | Trace  | `docs-review-trace`  | 2 core             | 1          | 3     | L2    | 100k   |
+|                    | Vector | `docs-review-vector` | 3–4                | 2–3        | 4     | L2    | 150k   |
+|                    | Axiom  | `docs-review-axiom`  | 5–8                | 2–3        | 5     | L3    | 150k   |
+| **Code review**    | Bell   | `code-review-bell`   | 2 core             | 1          | 3     | L2    | 100k   |
+|                    | Book   | `code-review-book`   | core + conditional | 2          | 4     | L2    | 150k   |
+|                    | Candle | `code-review-candle` | all                | 2          | 5     | L3    | 150k   |
+| **Doc generation** | Facet  | `doc-facet`          | 2–3                | 1          | 3     | L2    | 100k   |
+|                    | Lens   | `doc-lens`           | 3–5                | 2          | 4     | L2    | 150k   |
+|                    | Prism  | `doc-prism`          | 5–8                | 3          | 5     | L3    | 150k   |
+
+**Code Review Classification:** ChangeScope × RiskDomain → Bell/Book/Candle. PATCH/GENERAL → Bell; PATCH/SENSITIVE or MODULE/GENERAL → Book; MODULE/SENSITIVE or CROSS_CUTTING → Candle.
+
+**Perspectives:** Core (all tiers): Correctness, Error Handling. Conditional: Security (`has_security_surface`), Tests (`has_test_changes`), API (`has_api_changes`). Extended (Candle): Performance, Architecture, Regression Risk.
+
+**Validators:** validator-evidence (fact-checker, CLI tools) + validator-rigor (reasoning quality). Bell = evidence only; Book/Candle = both. Monotonic: no new findings after iteration 1.
+
+**Docs Review Classification:** ArtifactScope × ReviewComplexity → Trace/Vector/Axiom.
+
+**Doc Draft Classification:** DocumentIntent × ContentDomain → Facet/Lens/Prism.
+
+**Workflow files:** `cluster-templates/base-templates/{docs-review,code-review,doc-draft}-workflow.json` · Tier configs: `cluster-templates/{docs-review,code-review}-{tier}.json`, `cluster-templates/doc-{tier}.json` · Conductors: `cluster-templates/{docs-review,code-review,doc-draft}-conductor.json`
+
+### Intentional Differences Between Families
+
+These differences look inconsistent but are warranted by domain semantics. **Do NOT standardize.**
+
+| Aspect                      | Code Review                                              | Doc Draft                                      | Docs Review                     | Why Different                                                                                                                                                                     |
+| --------------------------- | -------------------------------------------------------- | ---------------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Verdicts**                | ACCEPT/ACCEPT_WITH_NOTES/DOWNGRADE/REJECT/NEEDS_EVIDENCE | ACCEPT/APPROVE_WITH_NOTES/REVISE/REJECT        | Same as code-review             | Finding-based reviews need DOWNGRADE (severity recalibration) + NEEDS_EVIDENCE. Section-based docs need REVISE (fix the content).                                                 |
+| **Refinement**              | Monotonic (no new findings)                              | Non-monotonic delta (SPLIT/MERGE/RESTRUCTURE)  | Monotonic                       | Review scope is fixed; document structure evolves.                                                                                                                                |
+| **Post-validation**         | Raw VALIDATION_RESULT → analyst                          | revision-preparer → REVISION_CONTEXT → drafter | Raw VALIDATION_RESULT → analyst | Doc-draft delta model makes it hard to reconstruct current state from raw messages. Reviews don't need this — findings are self-contained.                                        |
+| **Classification 1st axis** | ChangeScope (PATCH/MODULE/CROSS_CUTTING)                 | DocumentIntent (INFORMATIONAL/ACTIONABLE)      | ArtifactScope (SINGLE/CHAIN)    | Inputs are fundamentally different: code diffs vs document briefs vs design artifacts.                                                                                            |
+| **Conductor junior level**  | level2                                                   | level1                                         | level2                          | Doc-draft classification (2 binary fields) is simpler than code-review (6-field output including boolean detection) or docs-review (4-field output with artifact type detection). |
+| **Conductor fallback**      | BOOK (middle)                                            | LENS (middle)                                  | VECTOR (middle)                 | All use middle tier — safe default that balances coverage vs cost.                                                                                                                |
+
 ## Isolation Modes
 
 | Mode     | Flag         | Use When                                           |
@@ -244,32 +283,17 @@ zeroshot run 123 --docker --no-mounts                          # Disable all
 
 ## Anti-Patterns (Zeroshot-Specific)
 
-### 1. Running Zeroshot Without Permission
-
-❌ `zeroshot run 123` without user consent · ✅ Ask first, wait for "run zeroshot"
-**WHY:** Multi-agent runs consume significant API credits.
-
-### 2. Git Commands in Validator Prompts
+### 1. Git Commands in Validator Prompts
 
 ❌ `"Run git diff to verify..."` · ✅ `"Read src/index.js and verify function exists..."`
 **WHY:** Multiple agents modify git state concurrently. Validators read stale state.
 
-### 3. Asking Questions in Autonomous Workflows
-
-❌ `await AskUserQuestion(...)` · ✅ Make autonomous decision with reasoning
-**WHY:** Zeroshot agents run non-interactively. Blocking = stuck forever.
-
-### 4. Worker Git Operations Without Isolation
-
-❌ `zeroshot run 123` (pollutes main) · ✅ `--worktree`, `--pr`, `--docker`
-**WHY:** Prevents contamination, enables parallel work.
-
-### 5. Using Git Stash
+### 2. Using Git Stash
 
 ❌ `git stash` (hides work) · ✅ `git add -A && git commit -m "WIP: ..."`
 **WHY:** WIP commits are visible to other agents, never lost, squashable.
 
-### 6. Hardcoding in Templates
+### 3. Hardcoding in Templates
 
 Parameterize from `cluster.config.complexity`, never hardcode in templates.
 
@@ -321,8 +345,6 @@ gh pr merge --auto --squash
 | `~/.zeroshot/clusters.json` | Cluster metadata      |
 | `~/.zeroshot/<id>.db`       | SQLite message ledger |
 
-Clusters survive crashes. Resume: `zeroshot resume <id>`
-
 **Bash subprocess output not streamed:** Claude CLI returns `tool_result` after subprocess completes.
 
 **Kubernetes/SQLite:** Network filesystems (EFS/NFS/CephFS) cause latency and lock contention. Set `ZEROSHOT_SQLITE_JOURNAL_MODE=DELETE` for non-WAL-friendly FS. Don't run multiple pods against the same `~/.zeroshot` volume.
@@ -333,20 +355,55 @@ Clusters survive crashes. Resume: `zeroshot resume <id>`
 
 **PR Mode Completion Hang (2026-01-15):** PR-mode clusters hung after PR creation — no `CLUSTER_COMPLETE` published. Fix: `onComplete` hook in `src/agents/git-pusher-agent.json`. Test: `tests/integration/orchestrator-flow.test.js`
 
+**Analyst Context Overflow (fork):** 5–8 subagents spawned in one message exceed 200K context before auto-compaction. Fix: Batch spawns (max 4/message), `AUTOCOMPACT_PCT_OVERRIDE` by level (90/87/84%), output density guidance. Files: `agent-task-executor.js:700`, base templates.
+
+**Validator Infinite Loop on 0 Findings (fork):** `reviews.length > 0 &&` guard → `approved: false` on clean code (`[].every()` is vacuously true). Fix: Removed guard from all 10 transforms across 3 templates. Also: persist `paramOverrides` on resume. Files: base templates, `orchestrator.js`.
+
+## Platform Extensions (Fork)
+
+### Parameterised Templates
+
+`TemplateResolver` substitutes `{{param}}` placeholders in base templates. Conditional agents (`"condition"` field) included only if param is truthy. Unresolved placeholders fail hard. Pure placeholder values preserve JS types (numbers/booleans remain types).
+
+Implementation: `src/template-resolver.js`
+
+### `execute_system_command` Trigger
+
+Runs a shell command on trigger fire. Message content piped to stdin as JSON. Env includes `CLUSTER_ID` and `ZEROSHOT_ROOT`. Options: `stopClusterAfter`, `timeout`, `onSuccess`/`onFailure` topic routing (idle on failure when configured, enabling re-trigger loops). Output truncated to 5000 chars. `contentFromOutput: true` uses script stdout as published message content.
+
+Implementation: `src/agent/agent-lifecycle.js:316`
+
+### Subagent Tracking
+
+Live StatusFooter display of Claude Code subagents (Task tool). `buildSpawnEnv()` sets `ZEROSHOT_TRACK_SUBAGENTS=1` + events file path → Claude hook writes JSONL start/stop events → `SubagentTracker` polls with offset tracking → `StatusFooter` renders tree rows.
+
+Implementation: `src/subagent-tracker.js`, `src/status-footer.js`, `src/agent/agent-task-executor.js:679`
+
+### Quality Gate
+
+Zero-cost checks (lint, typecheck, tests) between worker completion and validator start. Reads `.zeroshot-quality` from project root. Templates: `worker-validator`, `full-workflow`, `code-review-workflow` (all accept `quality_gate` param, default `true`).
+
+**Code review variant:** quality gate runs on `ISSUE_OPENED` (before analysis). Failure aborts via `quality-gate-stopper` — no LLM tokens spent.
+
+**Setup:** Auto-detected on first `zeroshot run` (heuristic with LLM fallback, stored in `~/.zeroshot/projects/`). **Skip:** `--skip-quality-gate` flag.
+
+## CI & Branch Protection (Fork)
+
+**Ruleset: `main-protection`** — require PRs (0 approvals), require status checks (`check` + both `install-matrix` jobs), strict up-to-date policy. Auto-merge enabled.
+
+**Audit exclusion:** `.audit-ignore` (gitignored) lists known-unfixable GHSA IDs → pre-push hook syncs to `AUDIT_IGNORE` GitHub Actions secret → CI filters `npm audit --json` output, failing only on new advisories.
+
+**Staleness check:** pre-push blocks if `# Last reviewed:` date is >30 days old. Resolution: run `npm audit --omit=dev`, remove fixed advisories, update date.
+
+| File                         | Purpose                                                  |
+| ---------------------------- | -------------------------------------------------------- |
+| `.audit-ignore`              | GHSA exclusion list (gitignored, single source of truth) |
+| `.github/workflows/ci.yml`   | Reads `AUDIT_IGNORE` secret, filters audit JSON          |
+| `.husky/pre-push` (PART 4/5) | Staleness check + secret sync                            |
+
 ## CLAUDE.md Writing Rules
 
 - **Scope:** Narrowest possible. Module-specific → nested CLAUDE.md. Cross-cutting → root.
 - **Priority:** Critical gotchas > routing tables > anti-patterns with WHY > commands/troubleshooting
 - **Delete:** Tutorial content, directory trees, interface definitions, parent duplicates
 - **Format:** Tables over prose. `ALWAYS`/`NEVER`/`CRITICAL` for rules. ❌/✅ examples with WHY.
-
-## Multi-Agent Constraints
-
-| Pattern                   | Why                                                   |
-| ------------------------- | ----------------------------------------------------- |
-| No global mutable state   | Agents run in parallel. Globals = race conditions.    |
-| Never block on user input | Agents are non-interactive. Blocking = stuck forever. |
-
-## TODO
-
-- Investigate standardising the conductor classification pattern (2D matrix → boolean flags → conditional agent activation) across doc-gen, code-review, and docs-review systems, or document why per-system variations are intentional.

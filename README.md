@@ -1,6 +1,8 @@
-# zeroshot CLI
+# Zeroshot — Multi-Agent AI Orchestration Engine
 
-> **🎉 New in v5.4:** Now supports **OpenCode** CLI! Use Claude, Codex, Gemini, or OpenCode as your AI provider. Also supports **GitHub, GitLab, Jira, and Azure DevOps** as issue backends. See [Providers](#providers) and [Multi-Platform Issue Support](#multi-platform-issue-support).
+> Fork of [covibes/zeroshot](https://github.com/covibes/zeroshot) · Extended with
+> multi-agent review workflows, quality gate infrastructure, and real-time subagent
+> tracking. Original work by [Mark](https://github.com/Axionatic).
 
 <!-- install-placeholder -->
 <p align="center">
@@ -13,15 +15,11 @@
   <em>Demo (100x speed, 90-minute run, 5 iterations to approval)</em>
 </p>
 
-[![CI](https://github.com/covibes/zeroshot/actions/workflows/ci.yml/badge.svg)](https://github.com/covibes/zeroshot/actions/workflows/ci.yml)
+[![CI](https://github.com/Axionatic/zeroshot/actions/workflows/ci.yml/badge.svg)](https://github.com/Axionatic/zeroshot/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/@covibes/zeroshot.svg)](https://www.npmjs.com/package/@covibes/zeroshot)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node 18+](https://img.shields.io/badge/node-18%2B-brightgreen.svg)](https://nodejs.org/)
 ![Platform: Linux | macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue.svg)
-
-<!-- discord-placeholder -->
-
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/PdZ3UEXB)
 
 Zeroshot is an open-source AI coding agent orchestration CLI that runs multi-agent workflows to autonomously implement, review, test, and verify code changes.
 
@@ -53,6 +51,95 @@ retry with exponential backoff up to 3 times, merge non-conflicting field change
 and surface conflicts with details. Handle the ABA problem where version goes A->B->A."
 ```
 
+## Fork Extensions
+
+### Multi-Agent Review Workflows
+
+Three systems sharing a common pipeline: router → parallel analysts (via Claude Code Task tool)
+→ adversarial validators → synthesiser → report writer.
+
+| System             | Tier   | Config               | Analysts           | Validators | Iters | Tokens |
+| ------------------ | ------ | -------------------- | ------------------ | ---------- | ----- | ------ |
+| **Design review**  | Trace  | `docs-review-trace`  | 2 core             | 1          | 3     | 100k   |
+|                    | Vector | `docs-review-vector` | 3–4                | 2–3        | 4     | 150k   |
+|                    | Axiom  | `docs-review-axiom`  | 5–8                | 2–3        | 5     | 150k   |
+| **Code review**    | Bell   | `code-review-bell`   | 2 core             | 1          | 3     | 100k   |
+|                    | Book   | `code-review-book`   | core + conditional | 2          | 4     | 150k   |
+|                    | Candle | `code-review-candle` | all                | 2          | 5     | 150k   |
+| **Doc generation** | Facet  | `doc-facet`          | 2–3                | 1          | 3     | 100k   |
+|                    | Lens   | `doc-lens`           | 3–5                | 2          | 4     | 150k   |
+|                    | Prism  | `doc-prism`          | 5–8                | 3          | 5     | 150k   |
+
+Auto-classifying conductors pick the tier from input: `docs-review-conductor` (ArtifactScope × ReviewComplexity),
+`code-review-conductor` (ChangeScope × RiskDomain), `doc-draft-conductor` (DocumentIntent × ContentDomain).
+
+```bash
+# Fixed tier
+zeroshot run "Review these requirements" --config docs-review-trace
+zeroshot run "review my changes" --config code-review-bell
+zeroshot run "Draft a migration checklist" --config doc-facet
+
+# Auto-classify
+zeroshot run "Review this" --config docs-review-conductor
+zeroshot run "review my changes" --config code-review-conductor
+zeroshot run "Generate acceptance criteria for login" --config doc-draft-conductor
+```
+
+<details><summary>Optional: zs shell shorthand</summary>
+
+```bash
+zs() {
+    case "$1" in
+        docs-review) shift; zeroshot run "$@" --config docs-review-conductor ;;
+        trace)       shift; zeroshot run "$@" --config docs-review-trace ;;
+        vector)      shift; zeroshot run "$@" --config docs-review-vector ;;
+        axiom)       shift; zeroshot run "$@" --config docs-review-axiom ;;
+        code-review) shift; zeroshot run "$@" --config code-review-conductor ;;
+        bell)        shift; zeroshot run "$@" --config code-review-bell ;;
+        book)        shift; zeroshot run "$@" --config code-review-book ;;
+        candle)      shift; zeroshot run "$@" --config code-review-candle ;;
+        doc-gen)     shift; zeroshot run "$@" --config doc-draft-conductor ;;
+        facet)       shift; zeroshot run "$@" --config doc-facet ;;
+        lens)        shift; zeroshot run "$@" --config doc-lens ;;
+        prism)       shift; zeroshot run "$@" --config doc-prism ;;
+        *)           zeroshot "$@" ;;
+    esac
+}
+```
+
+</details>
+
+Then: `zs trace "Review these requirements"`, `zs bell "review my changes"`, `zs doc-gen "Draft a checklist"`, etc.
+
+### Quality Gate System
+
+Zero-cost checks (lint, typecheck, tests) run between worker completion and validator start.
+Auto-detected on first run; cached in `~/.zeroshot/projects/`. Skip with `--skip-quality-gate`.
+
+```
+Worker done → IMPLEMENTATION_READY → quality-gate → pass → QUALITY_GATE_PASSED → Validators
+                                                         → fail → QUALITY_GATE_FAILED → Worker retries
+```
+
+### Real-Time Subagent Tracking
+
+Live display of Claude Code Task tool subagents in the status footer. Polls a JSONL event file
+with offset tracking and renders a live tree of active subagents.
+
+### Platform Primitives
+
+Two new cluster primitives that the workflow families above are built on:
+
+**`execute_system_command` trigger** — runs a shell command when a topic fires. Message content
+is piped to stdin as JSON; stdout can be published as the next message. Supports
+`onSuccess`/`onFailure` topic routing, enabling re-trigger loops (e.g. quality gate → worker
+retry). Used by the quality gate, revision preparer, and report writer stages.
+
+**Parameterised templates** — `{{param}}` placeholders in base templates are substituted at
+cluster start. Conditional agents (`"condition"` field) are included only when a param is
+truthy, which is how the tier system selects analyst counts without duplicating templates.
+Type-preserving: numbers and booleans stay typed rather than becoming strings.
+
 ## Why Not Just Use a Single AI Agent?
 
 | Approach                   | Writes Code | Runs Tests | Blind Validation | Iterates Until Verified |
@@ -60,14 +147,6 @@ and surface conflicts with details. Handle the ABA problem where version goes A-
 | Chat-based assistant       | ✅          | ⚠️         | ❌               | ❌                      |
 | Single coding agent        | ✅          | ⚠️         | ❌               | ⚠️                      |
 | **Zeroshot (multi-agent)** | ✅          | ✅         | ✅               | ✅                      |
-
-## Use Cases
-
-- Autonomous AI code refactoring
-- AI-powered pull request automation
-- Automated bug fixing with validation
-- Multi-agent code generation for software engineering
-- Agentic coding workflows with blind validation
 
 ## Who Is This For?
 
@@ -113,14 +192,6 @@ zeroshot providers
 zeroshot providers set-default codex
 zeroshot run 123 --provider gemini
 ```
-
-See `docs/providers.md` for setup, model levels, and Docker mounts.
-
-## Why Multiple Agents?
-
-Single-agent sessions degrade. Context gets buried under thousands of tokens. The model optimizes for "done" over "correct."
-
-Zeroshot fixes this with isolated agents that check each other's work. Validators can't lie about code they didn't write. Fail the check? Fix and retry until it actually works.
 
 ## What Makes It Different
 
@@ -339,14 +410,6 @@ See [CLAUDE.md](./CLAUDE.md) for the cluster schema and examples.
 
 </details>
 
-## Crash Recovery
-
-All state is persisted in the SQLite ledger. You can resume at any time:
-
-```bash
-zeroshot resume cluster-bold-panther
-```
-
 ## Isolation Modes
 
 ### Git Worktree (Default for --pr/--ship)
@@ -463,21 +526,16 @@ zeroshot settings set dockerEnvPassthrough '["MY_API_KEY", "TF_VAR_*"]'
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+This is a personal fork. For contributing to upstream, see [covibes/zeroshot](https://github.com/covibes/zeroshot).
 
-Please read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before participating.
-
-For security issues, see [SECURITY.md](SECURITY.md).
+For security issues in this fork, see [SECURITY.md](SECURITY.md).
 
 ## TUI
 
-Ratatui (Rust) is the only supported TUI. Entry points:
+Ratatui (Rust) is the only supported TUI. Entry points: `zeroshot` (TTY, no args), `zeroshot tui`, `zeroshot watch`.
 
-- `zeroshot` (TTY + no args)
-- `zeroshot tui`
-- `zeroshot watch`
-
-### TUI Development
+<details>
+<summary><strong>TUI Development</strong></summary>
 
 The Rust TUI spawns a Node backend over stdio. Run both while iterating.
 
@@ -540,8 +598,10 @@ ZEROSHOT_TUI_BINARY_PATH="$PWD/tui-rs/target/debug/zeroshot-tui" node cli/index.
 - `ZEROSHOT_TUI_BINARY_PATH` points to a local Rust binary
 - `ZEROSHOT_TUI_UI=classic|disruptive` forces UI variant
 
+</details>
+
 ---
 
-MIT - [Covibes](https://github.com/covibes)
+MIT - [Covibes](https://github.com/covibes) · Fork maintained by [Mark Dingwall](https://github.com/Axionatic)
 
 Built on [Claude Code](https://claude.com/product/claude-code) by Anthropic.
