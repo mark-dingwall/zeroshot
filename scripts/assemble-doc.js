@@ -191,8 +191,8 @@ async function main() {
 
     // Write file
     const docType = (doc.documentType || 'DOCUMENT').toUpperCase();
-    const filename = `${docType}_${clusterId}.md`;
-    const filepath = path.join(process.cwd(), filename);
+    const filepath =
+      process.env.ZEROSHOT_OUTPUT_FILE || path.join(process.cwd(), `${docType}_${clusterId}.md`);
 
     fs.writeFileSync(filepath, markdown, 'utf-8');
     console.log(`Document written: ${filepath}`);

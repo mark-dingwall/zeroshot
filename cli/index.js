@@ -279,6 +279,7 @@ function buildDaemonEnv(options, clusterId, targetCwd) {
     ZEROSHOT_PR_BASE: options.prBase || '',
     ZEROSHOT_MERGE_QUEUE: mergeQueueEnv,
     ZEROSHOT_CLOSE_ISSUE: options.closeIssue || '',
+    ZEROSHOT_OUTPUT_FILE: process.env.ZEROSHOT_OUTPUT_FILE || '',
     ZEROSHOT_CWD: targetCwd,
   };
 }
@@ -2314,6 +2315,7 @@ program
   .option('--mount <spec...>', 'Add Docker mount (host:container[:ro]). Repeatable.')
   .option('--no-mounts', 'Disable all Docker credential mounts')
   .option('--skip-quality-gate', 'Skip quality gate checks (tests/lint) before review')
+  .option('-o, --output <file>', 'Output filename for reports and documents')
   .option(
     '--container-home <path>',
     'Container home directory for $HOME expansion (default: /root)'
@@ -2349,6 +2351,14 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps)
     try {
       // Normalize options (--ship → --pr → --worktree flags)
       normalizeRunOptions(options);
+
+      // Resolve --output to absolute path before daemon spawn (daemon changes CWD)
+      if (options.output) {
+        let outputPath = options.output;
+        if (!path.extname(outputPath)) outputPath += '.md';
+        if (!path.isAbsolute(outputPath)) outputPath = path.resolve(process.cwd(), outputPath);
+        process.env.ZEROSHOT_OUTPUT_FILE = outputPath;
+      }
 
       // Determine force provider from CLI flags
       let forceProvider = null;
