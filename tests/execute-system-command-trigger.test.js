@@ -29,46 +29,58 @@ describe('execute_system_command trigger action', function () {
   it('should pipe message.content as JSON to stdin', async function () {
     const agent = createMockAgent();
     const content = { text: 'hello', data: { foo: 'bar' } };
+    const stub = sinon.stub(safeExec, 'execSync').returns('stubbed\n');
 
-    // Use a command that reads stdin and echoes it
     const trigger = {
       action: 'execute_system_command',
       config: { command: 'cat' },
     };
     const message = { content, topic: 'TEST' };
 
-    await executeTriggerAction(agent, trigger, message);
+    try {
+      await executeTriggerAction(agent, trigger, message);
 
-    // cat echoes stdin to stdout, which gets logged
-    assert.ok(
-      agent.logs.some((l) => l.includes(JSON.stringify(content))),
-      `Expected logs to contain stringified content. Logs: ${agent.logs.join('\n')}`
-    );
+      assert.ok(stub.calledOnce, 'execSync should be called once');
+      const opts = stub.firstCall.args[1];
+      assert.strictEqual(
+        opts.input,
+        JSON.stringify(content),
+        'stdin should be JSON-serialized content'
+      );
+    } finally {
+      stub.restore();
+    }
   });
 
   it('should set ZEROSHOT_ROOT and CLUSTER_ID env vars', async function () {
     const agent = createMockAgent();
+    const stub = sinon.stub(safeExec, 'execSync').returns('ok\n');
+
     const trigger = {
       action: 'execute_system_command',
-      config: {
-        command: 'echo "ROOT=$ZEROSHOT_ROOT CLUSTER=$CLUSTER_ID"',
-      },
+      config: { command: 'echo test' },
     };
     const message = { content: { text: 'test' }, topic: 'TEST' };
 
-    await executeTriggerAction(agent, trigger, message);
+    try {
+      await executeTriggerAction(agent, trigger, message);
 
-    const expectedRoot = path.join(__dirname, '..');
-    const outputLog = agent.logs.find((l) => l.includes('System command output:'));
-    assert.ok(outputLog, `Expected output log. Logs: ${agent.logs.join('\n')}`);
-    assert.ok(
-      outputLog.includes(`ROOT=${expectedRoot}`),
-      `Expected ZEROSHOT_ROOT in output: ${outputLog}`
-    );
-    assert.ok(
-      outputLog.includes('CLUSTER=test-cluster-123'),
-      `Expected CLUSTER_ID in output: ${outputLog}`
-    );
+      assert.ok(stub.calledOnce, 'execSync should be called once');
+      const opts = stub.firstCall.args[1];
+      const expectedRoot = path.join(__dirname, '..');
+      assert.strictEqual(
+        opts.env.ZEROSHOT_ROOT,
+        expectedRoot,
+        'ZEROSHOT_ROOT should be package root'
+      );
+      assert.strictEqual(
+        opts.env.CLUSTER_ID,
+        'test-cluster-123',
+        'CLUSTER_ID should match cluster id'
+      );
+    } finally {
+      stub.restore();
+    }
   });
 
   describe('success-path state transitions (stubbed execSync)', function () {

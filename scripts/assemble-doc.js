@@ -194,6 +194,7 @@ async function main() {
     const filepath =
       process.env.ZEROSHOT_OUTPUT_FILE || path.join(process.cwd(), `${docType}_${clusterId}.md`);
 
+    fs.mkdirSync(path.dirname(filepath), { recursive: true });
     fs.writeFileSync(filepath, markdown, 'utf-8');
     console.log(`Document written: ${filepath}`);
   } finally {
