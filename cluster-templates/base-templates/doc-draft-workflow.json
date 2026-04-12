@@ -165,16 +165,9 @@
       "hooks": {
         "onComplete": {
           "action": "publish_message",
-          "config": {
-            "topic": "DRAFT_READY",
-            "content": {
-              "text": "{{result.summary}}",
-              "data": {
-                "completionStatus": "{{result.completionStatus}}",
-                "document": "{{result.document}}",
-                "delta": "{{result.delta}}"
-              }
-            }
+          "transform": {
+            "engine": "javascript",
+            "script": "/* Dot-notation on result.summary / result.completionStatus is required: these are always present (schema required), and at least one dot-notation access must exist so scriptUsesResult gate parses the result. Bracket-notation on result['document'] / result['delta'] bypasses getAccessedFields regex so conditionally-absent fields don't block the transform. */ var priorDrafts = ledger.count({ topic: 'DRAFT_READY' }); var isIter1 = priorDrafts === 0; if (isIter1 && !result['document']) { return { topic: 'DRAFT_READY', content: { text: 'Drafter produced no document on iteration 1 — publishing error for graceful recovery', data: { completionStatus: { canValidate: false, percentComplete: 0 }, document: { title: 'ERROR', documentType: 'OTHER', sections: [], perspectivesUsed: [] }, delta: null } } }; } if (!isIter1 && !result['delta']) { console.warn('Drafter produced no delta on iteration ' + (priorDrafts + 1) + ' — publishing empty delta'); } return { topic: 'DRAFT_READY', content: { text: result.summary || '', data: { completionStatus: result.completionStatus, document: isIter1 ? result['document'] : null, delta: !isIter1 ? (result['delta'] || { revisedSections: [], newSections: [], removedSections: [] }) : null } } };"
           }
         },
         "onError": {

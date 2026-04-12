@@ -254,10 +254,15 @@ describe('Doc Draft Workflow — Template Resolution', function () {
   // --- Hook wiring ---
 
   describe('Hook wiring', function () {
-    it('drafter publishes to DRAFT_READY', function () {
+    it('drafter publishes to DRAFT_READY via transform', function () {
       const resolved = resolveWorkflow();
       const drafter = resolved.agents.find((a) => a.id === 'drafter');
-      assert.strictEqual(drafter.hooks.onComplete.config.topic, 'DRAFT_READY');
+      const script = drafter.hooks.onComplete.transform.script;
+      assert.ok(script.includes("'DRAFT_READY'"), 'Transform should target DRAFT_READY');
+      assert.ok(
+        script.includes('ledger.count'),
+        'Transform should use ledger.count for iteration detection'
+      );
     });
 
     it('drafter error hook publishes to DRAFT_READY', function () {
@@ -815,5 +820,143 @@ describe('Doc Draft Conductor — Config Validation', function () {
     assert.ok(script.includes("return 'prism'"), 'ACTIONABLE+SENSITIVE should route to prism');
     assert.ok(script.includes("return 'lens'"), 'Mixed should route to lens');
     assert.ok(script.includes("return 'facet'"), 'INFORMATIONAL+GENERAL should route to facet');
+  });
+});
+
+describe('Drafter onComplete Transform — Logic Tests', function () {
+  const vm = require('vm');
+  let transformScript;
+
+  before(function () {
+    const templatesDir = path.join(__dirname, '..', 'cluster-templates');
+    const resolver = new TemplateResolver(templatesDir);
+    const resolved = resolver.resolve('doc-draft-workflow', {
+      tier: 'lens',
+      drafter_level: 'level2',
+      validator_count: 2,
+      max_iterations: 4,
+      max_tokens: 150000,
+      has_action_items: false,
+    });
+    const drafter = resolved.agents.find((a) => a.id === 'drafter');
+    transformScript = drafter.hooks.onComplete.transform.script;
+  });
+
+  function runTransform(resultData, ledgerCount) {
+    const warnings = [];
+    const sandbox = {
+      result: resultData,
+      ledger: { count: () => ledgerCount },
+      console: { warn: (msg) => warnings.push(msg) },
+    };
+    const ctx = vm.createContext(sandbox);
+    ctx.__fn = vm.compileFunction(transformScript, [], { parsingContext: ctx });
+    const raw = vm.runInContext('__fn()', ctx, { timeout: 5000 });
+    // Roundtrip through JSON to normalize cross-context prototypes for deepStrictEqual
+    const returned = JSON.parse(JSON.stringify(raw));
+    return { returned, warnings };
+  }
+
+  it('iter 1 with document present — normal DRAFT_READY', function () {
+    const { returned } = runTransform(
+      {
+        summary: 'Drafted document',
+        completionStatus: { canValidate: true, percentComplete: 100 },
+        document: {
+          title: 'My Doc',
+          documentType: 'GUIDE',
+          sections: [{ id: 'I1' }],
+          perspectivesUsed: ['Analyst'],
+        },
+      },
+      0
+    );
+    assert.strictEqual(returned.topic, 'DRAFT_READY');
+    assert.strictEqual(returned.content.text, 'Drafted document');
+    assert.deepStrictEqual(returned.content.data.document.title, 'My Doc');
+    assert.strictEqual(returned.content.data.delta, null);
+    assert.strictEqual(returned.content.data.completionStatus.canValidate, true);
+  });
+
+  it('iter 1 with document missing — ERROR document', function () {
+    const { returned } = runTransform(
+      {
+        summary: 'Oops',
+        completionStatus: { canValidate: true, percentComplete: 50 },
+      },
+      0
+    );
+    assert.strictEqual(returned.topic, 'DRAFT_READY');
+    assert.strictEqual(returned.content.data.document.title, 'ERROR');
+    assert.strictEqual(returned.content.data.document.documentType, 'OTHER');
+    assert.deepStrictEqual(returned.content.data.document.sections, []);
+    assert.strictEqual(returned.content.data.completionStatus.canValidate, false);
+    assert.strictEqual(returned.content.data.delta, null);
+  });
+
+  it('iter 2+ with delta present — normal DRAFT_READY', function () {
+    const delta = { revisedSections: [{ id: 'A1' }], newSections: [], removedSections: [] };
+    const { returned } = runTransform(
+      {
+        summary: 'Revised sections',
+        completionStatus: { canValidate: true, percentComplete: 80 },
+        delta,
+      },
+      1
+    );
+    assert.strictEqual(returned.topic, 'DRAFT_READY');
+    assert.strictEqual(returned.content.data.document, null);
+    assert.deepStrictEqual(returned.content.data.delta, delta);
+  });
+
+  it('iter 2+ with delta missing — empty delta + warning', function () {
+    const { returned, warnings } = runTransform(
+      {
+        summary: 'Nothing changed',
+        completionStatus: { canValidate: true, percentComplete: 90 },
+      },
+      1
+    );
+    assert.strictEqual(returned.topic, 'DRAFT_READY');
+    assert.strictEqual(returned.content.data.document, null);
+    assert.deepStrictEqual(returned.content.data.delta, {
+      revisedSections: [],
+      newSections: [],
+      removedSections: [],
+    });
+    assert.strictEqual(warnings.length, 1);
+    assert.ok(warnings[0].includes('no delta'));
+  });
+});
+
+describe('ERROR Document Recovery — Integration', function () {
+  const { reconstructDocument } = require('../scripts/lib/doc-reconstruction');
+
+  it('ERROR document passes through reconstructDocument without throwing', function () {
+    const errorDoc = {
+      document: { title: 'ERROR', documentType: 'OTHER', sections: [], perspectivesUsed: [] },
+    };
+    const result = reconstructDocument([errorDoc]);
+    assert.strictEqual(result.title, 'ERROR');
+    assert.strictEqual(result.documentType, 'OTHER');
+    assert.deepStrictEqual(result.sections, []);
+  });
+
+  it('delta applied on top of ERROR document produces valid output', function () {
+    const errorDoc = {
+      document: { title: 'ERROR', documentType: 'OTHER', sections: [], perspectivesUsed: [] },
+    };
+    const delta = {
+      delta: {
+        revisedSections: [],
+        newSections: [
+          { id: 'A1', category: 'ACTION', heading: 'Step 1', depth: 2, content: 'Do thing' },
+        ],
+        removedSections: [],
+      },
+    };
+    const result = reconstructDocument([errorDoc, delta]);
+    assert.strictEqual(result.sections.length, 1);
+    assert.strictEqual(result.sections[0].id, 'A1');
   });
 });
