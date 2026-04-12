@@ -17,6 +17,12 @@ const lockfile = require('proper-lockfile');
 // Stale lock timeout in ms - if lock file is older than this, delete it
 const LOCK_STALE_MS = 5000;
 
+// Backstop timeout for synthesis chain after MAX_ITERATIONS.
+// The synthesizer (level1 model, JSON→markdown) typically completes in 2-3 min.
+// 10 minutes is generous headroom; if CLUSTER_COMPLETE hasn't arrived by then,
+// the chain is stuck and we force-stop.
+const MAX_ITER_SYNTHESIS_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * Remove lock file if it's stale (older than LOCK_STALE_MS)
  * Handles crashes that leave orphaned lock files
@@ -1184,6 +1190,8 @@ class Orchestrator {
 
   _registerClusterCompletionHandlers(messageBus, clusterId) {
     this._subscribeToClusterTopic(messageBus, clusterId, 'CLUSTER_COMPLETE', (message) => {
+      const cluster = this.clusters.get(clusterId);
+
       this._log(`\n${'='.repeat(80)}`);
       this._log(`✅ CLUSTER COMPLETED SUCCESSFULLY: ${clusterId}`);
       this._log(`${'='.repeat(80)}`);
@@ -1191,21 +1199,49 @@ class Orchestrator {
       this._log(`Initiated by: ${message.sender}`);
       this._log(`${'='.repeat(80)}\n`);
 
+      // Clear max-iterations safety timeout — synthesis chain completed normally
+      if (cluster?._maxIterSafetyTimeout) {
+        clearTimeout(cluster._maxIterSafetyTimeout);
+        cluster._maxIterSafetyTimeout = null;
+        this._log(`[Orchestrator] Cleared max-iterations safety timeout for ${clusterId}`);
+      }
+
       this.stop(clusterId).catch((err) => {
         console.error(`Failed to auto-stop cluster ${clusterId}:`, err.message);
       });
     });
 
     this._subscribeToClusterTopic(messageBus, clusterId, 'CLUSTER_FAILED', (message) => {
+      const cluster = this.clusters.get(clusterId);
+      const reason = message.content?.data?.reason;
+
       this._log(`\n${'='.repeat(80)}`);
       this._log(`❌ CLUSTER FAILED: ${clusterId}`);
       this._log(`${'='.repeat(80)}`);
-      this._log(`Reason: ${message.content?.data?.reason || 'unknown'}`);
+      this._log(`Reason: ${reason || 'unknown'}`);
       this._log(`Agent: ${message.sender}`);
       if (message.content?.text) {
         this._log(`Details: ${message.content.text}`);
       }
       this._log(`${'='.repeat(80)}\n`);
+
+      // MAX_ITERATIONS: defer stop to let the synthesis chain finish.
+      // The synthesizer is already running as a subprocess — give it time to
+      // publish SYNTHESIS_COMPLETE so the completion-detector can write output.
+      if (reason === 'max_iterations' && cluster) {
+        this._log(
+          `[Orchestrator] Deferring stop for ${clusterId} — waiting up to ${MAX_ITER_SYNTHESIS_TIMEOUT_MS / 1000}s for synthesis chain`
+        );
+        cluster._maxIterSafetyTimeout = setTimeout(() => {
+          this._log(
+            `[Orchestrator] Safety timeout: synthesis chain did not complete for ${clusterId}, forcing stop`
+          );
+          this.stop(clusterId).catch((err) => {
+            console.error(`Failed to safety-stop cluster ${clusterId}:`, err.message);
+          });
+        }, MAX_ITER_SYNTHESIS_TIMEOUT_MS);
+        return;
+      }
 
       this.stop(clusterId).catch((err) => {
         console.error(`Failed to auto-stop cluster ${clusterId}:`, err.message);
@@ -1733,6 +1769,11 @@ class Orchestrator {
       throw new Error(`Cluster ${clusterId} not found`);
     }
 
+    if (cluster.state === 'stopped' || cluster.state === 'stopping') {
+      this._log(`[Orchestrator] Cluster ${clusterId} already ${cluster.state}, skipping stop`);
+      return;
+    }
+
     await this._signalRemoteCluster(cluster, { action: 'stop' });
 
     // CRITICAL: Wait for initialization to complete before stopping
@@ -1747,6 +1788,12 @@ class Orchestrator {
     }
 
     cluster.state = 'stopping';
+
+    // Clear max-iterations safety timeout to prevent timer leaks
+    if (cluster._maxIterSafetyTimeout) {
+      clearTimeout(cluster._maxIterSafetyTimeout);
+      cluster._maxIterSafetyTimeout = null;
+    }
 
     // Stop all agents (including subclusters which handle their own children)
     for (const agent of cluster.agents) {
@@ -1813,6 +1860,12 @@ class Orchestrator {
     await this._signalRemoteCluster(cluster, { action: 'kill' });
 
     cluster.state = 'stopping';
+
+    // Clear max-iterations safety timeout to prevent timer leaks
+    if (cluster._maxIterSafetyTimeout) {
+      clearTimeout(cluster._maxIterSafetyTimeout);
+      cluster._maxIterSafetyTimeout = null;
+    }
 
     // Force stop all agents
     for (const agent of cluster.agents) {
