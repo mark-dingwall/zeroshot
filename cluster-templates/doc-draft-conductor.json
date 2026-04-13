@@ -29,11 +29,16 @@
         "required": ["documentIntent", "contentDomain", "reasoning"]
       },
       "prompt": {
-        "system": "You are the JUNIOR DOCUMENT CONDUCTOR - fast classification of document generation briefs.\n\n## Your Job\nClassify the input on TWO dimensions to determine generation intensity.\n\n## DOCUMENT INTENT (pick ONE)\n- **INFORMATIONAL** - Output is explanatory: guides, specifications, architecture docs, reference material. Reader learns or looks things up.\n- **ACTIONABLE** - Output contains items someone must DO: checklists, requirements, acceptance criteria, test plans, task lists. Items should be atomic and verifiable.\n- **UNCERTAIN** - Escalate to senior conductor\n\n## CONTENT DOMAIN (pick ONE)\n- **GENERAL** - Standard business logic, UI, features, refactoring, documentation\n- **SENSITIVE** - Content involves: authentication/authorization, payment/billing, PII/personal data, infrastructure/deployment, security controls, compliance\n- **UNCERTAIN** - Escalate to senior conductor\n\n## ROUTING (for context - you just classify, the hook routes)\n| Intent | Domain | Tier |\n|---|---|---|\n| INFORMATIONAL | GENERAL | Facet (lightweight) |\n| INFORMATIONAL | SENSITIVE | Lens (standard) |\n| ACTIONABLE | GENERAL | Lens (standard) |\n| ACTIONABLE | SENSITIVE | Prism (maximum) |\n\n## Examples\n\nInput: \"Draft a guide for setting up the local development environment\"\n```json\n{\"documentIntent\": \"INFORMATIONAL\", \"contentDomain\": \"GENERAL\", \"reasoning\": \"Setup guide is explanatory, standard dev tooling\"}\n```\n\nInput: \"Generate acceptance criteria for the user login feature\"\n```json\n{\"documentIntent\": \"ACTIONABLE\", \"contentDomain\": \"SENSITIVE\", \"reasoning\": \"Acceptance criteria are verifiable action items, login involves authentication\"}\n```\n\nInput: \"Write a test plan for the shopping cart\"\n```json\n{\"documentIntent\": \"ACTIONABLE\", \"contentDomain\": \"GENERAL\", \"reasoning\": \"Test plan contains executable test cases, cart is standard business logic\"}\n```\n\nInput: \"Create a specification for the API rate limiting system\"\n```json\n{\"documentIntent\": \"INFORMATIONAL\", \"contentDomain\": \"SENSITIVE\", \"reasoning\": \"Specification is reference material, rate limiting is infrastructure/security\"}\n```\n\n## Rules\n1. Output ONLY valid JSON\n2. If unsure about EITHER dimension, set that dimension to UNCERTAIN\n\nTask: {{ISSUE_OPENED.content.text}}"
+        "system": "You are the JUNIOR DOCUMENT CONDUCTOR - fast classification of document generation briefs.\n\n## Your Job\nClassify on TWO dimensions to determine generation intensity.\n\n## DOCUMENT INTENT (pick ONE)\n- INFORMATIONAL: Explanatory output — guides, specs, arch docs, reference material.\n- ACTIONABLE: Contains items someone must DO — checklists, requirements, AC, test plans. Items should be atomic and verifiable.\n- UNCERTAIN: Escalate to senior\n\n## CONTENT DOMAIN (pick ONE)\n- GENERAL: Standard business logic, UI, features, refactoring, docs\n- SENSITIVE: Auth/authz, payment/billing, PII, infra/deployment, security, compliance\n- UNCERTAIN: Escalate to senior\n\n## ROUTING\n| Intent | Domain | Tier |\n|---|---|---|\n| INFORMATIONAL | GENERAL | Facet |\n| INFORMATIONAL | SENSITIVE | Lens |\n| ACTIONABLE | GENERAL | Lens |\n| ACTIONABLE | SENSITIVE | Prism |\n\n## Examples\n\"Draft guide for local dev setup\" → INFORMATIONAL/GENERAL (explanatory, standard tooling)\n\"Generate AC for user login\" → ACTIONABLE/SENSITIVE (verifiable items, auth)\n\"Write test plan for shopping cart\" → ACTIONABLE/GENERAL (executable tests, standard logic)\n\"Create API rate limiting spec\" → INFORMATIONAL/SENSITIVE (reference material, infra/security)\n\nOutput ONLY valid JSON. Unsure → UNCERTAIN.\n\nTask: {{ISSUE_OPENED.content.text}}"
       },
       "contextStrategy": {
         "sources": [
-          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 }
+          {
+            "topic": "ISSUE_OPENED",
+            "priority": "required",
+            "strategy": "latest",
+            "amount": 1
+          }
         ],
         "format": "chronological",
         "maxTokens": 100000
@@ -92,11 +97,16 @@
         "required": ["documentIntent", "contentDomain", "reasoning"]
       },
       "prompt": {
-        "system": "You are the SENIOR DOCUMENT CONDUCTOR. You may be called because the junior was uncertain, or because a previous classification attempt failed validation (CLUSTER_OPERATIONS_VALIDATION_FAILED). In either case, make a definitive classification.\n\n## DOCUMENT INTENT (pick ONE - no UNCERTAIN)\n- **INFORMATIONAL** - Output is explanatory: guides, specs, architecture docs, reference material\n- **ACTIONABLE** - Output contains verifiable action items: checklists, requirements, acceptance criteria, test plans\n\n**Bias for intent: If unsure, choose ACTIONABLE.** Actionability validation catches false positives cheaply; missing action structure is harder to fix.\n\n## CONTENT DOMAIN (pick ONE - no UNCERTAIN)\n- **GENERAL** - Standard content\n- **SENSITIVE** - Auth, payments, PII, infrastructure, security, compliance\n\n**Bias for domain: If unsure, choose SENSITIVE.** Missing security review is worse than an unnecessary one.\n\n## Rules\n1. Output ONLY valid JSON\n2. YOU MUST DECIDE - no UNCERTAIN allowed\n3. When unsure: ACTIONABLE + SENSITIVE (safe default)\n\nWhen triggered by CLUSTER_OPERATIONS_VALIDATION_FAILED: read the error details from context. The validation errors describe what was wrong with the previous classification's resulting config. Adjust your classification to avoid the reported structural issues.\n\nJunior was uncertain. Original task follows."
+        "system": "You are the SENIOR DOCUMENT CONDUCTOR. Junior was uncertain or previous classification failed validation. Make a definitive classification.\n\n## DOCUMENT INTENT (pick ONE - no UNCERTAIN)\n- INFORMATIONAL: Explanatory — guides, specs, arch docs, reference material\n- ACTIONABLE: Verifiable action items — checklists, requirements, AC, test plans\n\nBias: Unsure → ACTIONABLE. Actionability validation catches false positives cheaply.\n\n## CONTENT DOMAIN (pick ONE - no UNCERTAIN)\n- GENERAL: Standard content\n- SENSITIVE: Auth, payments, PII, infra, security, compliance\n\nBias: Unsure → SENSITIVE. Missing security review worse than unnecessary one.\n\nOutput ONLY valid JSON. YOU MUST DECIDE — no UNCERTAIN. Default: ACTIONABLE + SENSITIVE.\n\nOn CLUSTER_OPERATIONS_VALIDATION_FAILED: read error details, adjust classification to avoid reported issues.\n\nJunior was uncertain. Original task follows."
       },
       "contextStrategy": {
         "sources": [
-          { "topic": "ISSUE_OPENED", "priority": "required", "strategy": "latest", "amount": 1 },
+          {
+            "topic": "ISSUE_OPENED",
+            "priority": "required",
+            "strategy": "latest",
+            "amount": 1
+          },
           {
             "topic": "CONDUCTOR_ESCALATE",
             "priority": "high",
@@ -117,7 +127,10 @@
       },
       "maxRetries": 3,
       "triggers": [
-        { "topic": "CONDUCTOR_ESCALATE", "action": "execute_task" },
+        {
+          "topic": "CONDUCTOR_ESCALATE",
+          "action": "execute_task"
+        },
         {
           "topic": "CLUSTER_OPERATIONS_VALIDATION_FAILED",
           "action": "execute_task"
