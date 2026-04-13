@@ -637,14 +637,6 @@ async function runTaskAttempt(agent, triggeringMessage) {
     orchestrator: agent.orchestrator,
   });
 
-  // Check max iterations limit BEFORE incrementing (prevents infinite rejection loops)
-  if (handleMaxIterations(agent)) {
-    return;
-  }
-
-  // Increment iteration BEFORE building context so worker knows current iteration
-  agent.iteration++;
-
   // Build context
   agent.state = 'building_context';
   const context = agent._buildContext(triggeringMessage);
@@ -923,6 +915,12 @@ async function executeTask(agent, triggeringMessage) {
   if (!agent.running) {
     return;
   }
+
+  // Check max iterations BEFORE incrementing (preserves existing semantics)
+  if (handleMaxIterations(agent)) return;
+
+  // Increment once per trigger fire, not per retry attempt
+  agent.iteration++;
 
   // Default: uses settings.maxRetries (default 3)
   // Override via agent config `maxRetries` to change retry behavior
