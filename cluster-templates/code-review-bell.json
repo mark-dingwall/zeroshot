@@ -43,7 +43,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const taskText = triggeringMessage.content?.text || '';\nif (!taskText || !taskText.trim()) throw new Error('ISSUE_OPENED has no text content — nothing to review');\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: '[CODE-REVIEW:BELL] Pass-through routing to bell tier',\n    data: {\n      operations: [\n        {\n          action: 'load_config',\n          config: {\n            base: 'code-review-workflow',\n            params: {\n              tier: 'bell',\n              analyst_level: 'level2',\n              validator_count: 1,\n              max_iterations: 3,\n              max_tokens: 100000,\n              validator_level: 'level2',\n              change_scope: 'PATCH',\n              risk_domain: 'GENERAL',\n              has_security_surface: false,\n              has_test_changes: false,\n              has_api_changes: false\n            }\n          }\n        },\n        {\n          action: 'publish',\n          topic: 'ISSUE_OPENED',\n          content: { text: taskText },\n          metadata: { _republished: true }\n        }\n      ]\n    }\n  }\n};"
+            "script": "const taskText = triggeringMessage.content?.text || '';\nif (!taskText || !taskText.trim()) throw new Error('ISSUE_OPENED has no text content — nothing to review');\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: '[CODE-REVIEW:BELL] routed',\n    data: {\n      operations: [\n        {\n          action: 'load_config',\n          config: {\n            base: 'code-review-workflow',\n            params: {\n              tier: 'bell',\n              analyst_level: 'level2',\n              validator_count: 1,\n              max_iterations: 3,\n              max_tokens: 100000,\n              validator_level: 'level2',\n              change_scope: 'PATCH',\n              risk_domain: 'GENERAL',\n              has_security_surface: false,\n              has_test_changes: false,\n              has_api_changes: false\n            }\n          }\n        },\n        {\n          action: 'publish',\n          topic: 'ISSUE_OPENED',\n          content: { text: taskText },\n          metadata: { _republished: true }\n        }\n      ]\n    }\n  }\n};"
           }
         },
         "onError": {
@@ -51,7 +51,7 @@
           "config": {
             "topic": "CLUSTER_FAILED",
             "content": {
-              "text": "Review router failed — could not load code review workflow",
+              "text": "Router failed",
               "data": { "reason": "router_error" }
             }
           }

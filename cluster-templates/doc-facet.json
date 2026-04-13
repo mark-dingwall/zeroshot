@@ -43,7 +43,7 @@
           "action": "publish_message",
           "transform": {
             "engine": "javascript",
-            "script": "const taskText = triggeringMessage.content?.text || '';\nif (!taskText || !taskText.trim()) throw new Error('ISSUE_OPENED has no text content — nothing to draft');\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: '[DOC:FACET] Pass-through routing to facet tier',\n    data: {\n      operations: [\n        {\n          action: 'load_config',\n          config: {\n            base: 'doc-draft-workflow',\n            params: {\n              tier: 'facet',\n              drafter_level: 'level2',\n              validator_count: 1,\n              max_iterations: 3,\n              max_tokens: 100000,\n              has_action_items: false\n            }\n          }\n        },\n        {\n          action: 'publish',\n          topic: 'ISSUE_OPENED',\n          content: { text: taskText },\n          metadata: { _republished: true }\n        }\n      ]\n    }\n  }\n};"
+            "script": "const taskText = triggeringMessage.content?.text || '';\nif (!taskText || !taskText.trim()) throw new Error('ISSUE_OPENED has no text content — nothing to draft');\n\nreturn {\n  topic: 'CLUSTER_OPERATIONS',\n  content: {\n    text: '[DOC:FACET] routed',\n    data: {\n      operations: [\n        {\n          action: 'load_config',\n          config: {\n            base: 'doc-draft-workflow',\n            params: {\n              tier: 'facet',\n              drafter_level: 'level2',\n              validator_count: 1,\n              max_iterations: 3,\n              max_tokens: 100000,\n              has_action_items: false\n            }\n          }\n        },\n        {\n          action: 'publish',\n          topic: 'ISSUE_OPENED',\n          content: { text: taskText },\n          metadata: { _republished: true }\n        }\n      ]\n    }\n  }\n};"
           }
         },
         "onError": {
@@ -51,7 +51,7 @@
           "config": {
             "topic": "CLUSTER_FAILED",
             "content": {
-              "text": "Doc router failed — could not load doc-draft workflow",
+              "text": "Router failed",
               "data": { "reason": "router_error" }
             }
           }
