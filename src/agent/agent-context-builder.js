@@ -59,44 +59,28 @@ function generateExampleFromSchema(schema) {
 }
 
 function buildAutonomousSection() {
-  let context = `## 🔴 CRITICAL: AUTONOMOUS EXECUTION REQUIRED\n\n`;
-  context += `You are running in a NON-INTERACTIVE cluster environment.\n\n`;
-  context += `**NEVER** use AskUserQuestion or ask for user input - there is NO user to respond.\n`;
-  context += `**NEVER** ask "Would you like me to..." or "Should I..." - JUST DO IT.\n`;
-  context += `**NEVER** wait for approval or confirmation - MAKE DECISIONS AUTONOMOUSLY.\n\n`;
-  context += `When facing choices:\n`;
-  context += `- Choose the option that maintains code quality and correctness\n`;
-  context += `- If unsure between "fix the code" vs "relax the rules" → ALWAYS fix the code\n`;
-  context += `- If unsure between "do more" vs "do less" → ALWAYS do what's required, nothing more\n\n`;
+  let context = `## AUTONOMOUS MODE\n\n`;
+  context += `NON-INTERACTIVE. No user present.\n`;
+  context += `FORBIDDEN: AskUserQuestion, "Should I...", "Would you like...", waiting for input.\n`;
+  context += `Decisions: quality > permissiveness, required scope only.\n\n`;
   return context;
 }
 
 function buildOutputStyleSection() {
-  let context = `## 🔴 OUTPUT STYLE - NON-NEGOTIABLE\n\n`;
-  context += `**ALL OUTPUT: Maximum informativeness, minimum verbosity. NO EXCEPTIONS.**\n\n`;
-  context += `This applies to EVERYTHING you output:\n`;
-  context += `- Text responses\n`;
-  context += `- JSON schema values\n`;
-  context += `- Reasoning fields\n`;
-  context += `- Summary fields\n`;
-  context += `- ALL string values in structured output\n\n`;
-  context += `Rules:\n`;
-  context += `- Progress: "Reading auth.ts" NOT "I will now read the auth.ts file..."\n`;
-  context += `- Tool calls: NO preamble. Call immediately.\n`;
-  context += `- Schema strings: Dense facts. No filler. No fluff.\n`;
-  context += `- Errors: DETAILED (stack traces, repro). NEVER compress errors.\n`;
-  context += `- FORBIDDEN: "I'll help...", "Let me...", "I'm going to...", "Sure!", "Great!", "Certainly!"\n\n`;
-  context += `Every token costs money. Waste nothing.\n\n`;
+  let context = `## OUTPUT DENSITY\n\n`;
+  context += `Pattern: [thing] [action] [reason]. No articles, hedging, filler.\n`;
+  context += `Fragments OK. Dense technical prose. Short synonyms.\n\n`;
+  context += `FORBIDDEN: "I'll", "Let me", "Going to", "Sure!", "Here is", "Certainly"\n`;
+  context += `FORBIDDEN: Repeating instructions back. Restating the question. Preambles.\n\n`;
+  context += `Schema strings: Facts only. Max density.\n`;
+  context += `Errors: FULL detail (stack traces, repro steps). Never compress errors.\n`;
+  context += `Progress: "Reading auth.ts" not "I will now read the auth.ts file"\n\n`;
   return context;
 }
 
 function buildGitOperationsSection() {
-  let context = `## 🚫 GIT OPERATIONS - FORBIDDEN\n\n`;
-  context += `NEVER commit, push, or create PRs. You only modify files.\n`;
-  context += `The git-pusher agent handles ALL git operations AFTER validators approve.\n\n`;
-  context += `- ❌ NEVER run: git add, git commit, git push, gh pr create\n`;
-  context += `- ❌ NEVER suggest committing changes\n`;
-  context += `- ✅ Only modify files and publish your completion message when done\n\n`;
+  let context = `## GIT — FORBIDDEN\n`;
+  context += `No commits/pushes/PRs. Only modify files. git-pusher handles git after validation.\n\n`;
   return context;
 }
 
@@ -133,7 +117,7 @@ function buildLegacyOutputSchemaSection(config) {
   if (!config.prompt?.outputFormat) return '';
 
   let context = `## Output Schema (REQUIRED)\n\n`;
-  context += `\`\`\`json\n${JSON.stringify(config.prompt.outputFormat.example, null, 2)}\n\`\`\`\n\n`;
+  context += `\`\`\`json\n${JSON.stringify(config.prompt.outputFormat.example)}\n\`\`\`\n\n`;
   context += `STRING VALUES IN THIS SCHEMA: Dense. Factual. No filler words. No pleasantries.\n`;
   if (config.prompt.outputFormat.rules) {
     for (const rule of config.prompt.outputFormat.rules) {
@@ -147,22 +131,18 @@ function buildLegacyOutputSchemaSection(config) {
 function buildJsonSchemaSection(config) {
   if (!config.jsonSchema || config.outputFormat !== 'json') return '';
 
-  let context = `## 🔴 OUTPUT FORMAT - JSON ONLY\n\n`;
-  context += `Your response must be ONLY valid JSON. No other text before or after.\n`;
-  context += `Start with { and end with }. Nothing else.\n\n`;
+  let context = `## JSON OUTPUT — REQUIRED\n\n`;
+  context += `Response must be ONLY valid JSON. Start with { end with }. Nothing else.\n\n`;
   context += `Required schema:\n`;
-  context += `\`\`\`json\n${JSON.stringify(config.jsonSchema, null, 2)}\n\`\`\`\n\n`;
+  context += `\`\`\`json\n${JSON.stringify(config.jsonSchema)}\n\`\`\`\n\n`;
 
   const example = generateExampleFromSchema(config.jsonSchema);
   if (example) {
     context += `Example output:\n`;
-    context += `\`\`\`json\n${JSON.stringify(example, null, 2)}\n\`\`\`\n\n`;
+    context += `\`\`\`json\n${JSON.stringify(example)}\n\`\`\`\n\n`;
   }
 
-  context += `CRITICAL RULES:\n`;
-  context += `- Output ONLY the JSON object - no explanation, no thinking, no preamble\n`;
-  context += `- Use EXACTLY the enum values specified (case-sensitive)\n`;
-  context += `- Include ALL required fields\n\n`;
+  context += `No preamble/explanation. Exact enum values (case-sensitive). All required fields.\n\n`;
   return context;
 }
 
@@ -198,12 +178,14 @@ function resolveSourceSince(source, cluster, lastTaskEndTime, lastAgentStartTime
 function formatSourceMessagesSection(source, messages) {
   let context = `\n## Messages from topic: ${source.topic}\n\n`;
   for (const msg of messages) {
-    context += `[${new Date(msg.timestamp).toISOString()}] ${msg.sender}:\n`;
+    const d = new Date(msg.timestamp);
+    const ts = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    context += `[${ts}] ${msg.sender}:\n`;
     if (msg.content?.text) {
       context += `${msg.content.text}\n`;
     }
     if (msg.content?.data) {
-      context += `Data: ${JSON.stringify(msg.content.data, null, 2)}\n`;
+      context += `Data: ${JSON.stringify(msg.content.data)}\n`;
     }
     context += '\n';
   }
@@ -325,12 +307,10 @@ function collectCannotValidateCriteria(prevValidations, options = {}) {
 function buildCannotValidateSection(cannotValidateCriteria) {
   if (cannotValidateCriteria.length === 0) return '';
 
-  let context = `\n## ⚠️ Permanently Unverifiable Criteria (SKIP THESE)\n\n`;
-  context += `The following criteria have PERMANENT environmental limitations (missing tools, no access).\n`;
-  context += `These limitations have not changed. Do NOT re-attempt verification.\n`;
-  context += `Mark these as CANNOT_VALIDATE again with the same reason.\n\n`;
+  let context = `\n## SKIP — Unverifiable Criteria\n\n`;
+  context += `Environmental limitations unchanged. Mark CANNOT_VALIDATE again with same reason.\n\n`;
   for (const cv of cannotValidateCriteria) {
-    context += `- **${cv.id}**: ${cv.reason}\n`;
+    context += `- ${cv.id}: ${cv.reason}\n`;
   }
   context += `\n`;
   return context;

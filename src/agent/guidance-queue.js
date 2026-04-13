@@ -2,9 +2,8 @@ const GUIDANCE_BLOCK_START = '<<GUIDANCE_QUEUE_START>>';
 const GUIDANCE_BLOCK_END = '<<GUIDANCE_QUEUE_END>>';
 
 function formatGuidanceMessage(message) {
-  const timestamp = Number.isFinite(message.timestamp)
-    ? new Date(message.timestamp).toISOString()
-    : new Date().toISOString();
+  const d = Number.isFinite(message.timestamp) ? new Date(message.timestamp) : new Date();
+  const timestamp = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   const sender = message.sender || 'unknown';
   const topic = message.topic || 'GUIDANCE';
   const target = message.receiver || message.target_agent_id;
@@ -15,7 +14,7 @@ function formatGuidanceMessage(message) {
     formatted += `${message.content.text}\n`;
   }
   if (message.content?.data) {
-    formatted += `${JSON.stringify(message.content.data, null, 2)}\n`;
+    formatted += `${JSON.stringify(message.content.data)}\n`;
   }
 
   return formatted.trimEnd();

@@ -386,7 +386,9 @@ class SubClusterWrapper {
   }
 
   _buildMessageContextLines(message) {
-    const lines = [`[${new Date(message.timestamp).toISOString()}] ${message.sender}:`];
+    const d = new Date(message.timestamp);
+    const ts = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    const lines = [`[${ts}] ${message.sender}:`];
     const text = message.content?.text;
     const data = message.content?.data;
 
@@ -395,7 +397,7 @@ class SubClusterWrapper {
     }
 
     if (data) {
-      lines.push(`Data: ${JSON.stringify(data, null, 2)}`);
+      lines.push(`Data: ${JSON.stringify(data)}`);
     }
 
     return lines;

@@ -231,96 +231,84 @@ function generatePrompt(config) {
     closeIssueMode,
   } = config;
 
-  // Azure-specific instructions for PR ID extraction
   const azurePrIdNote = requiresPrIdExtraction
-    ? `\n\n💡 IMPORTANT: The output will contain the PR ID. You MUST extract it for the next step.
-Look for output like: "Created PR 123" or parse the URL for the PR number.
-Save the PR ID to a variable for step 6.`
+    ? `\n\nOutput contains PR ID. Extract it for step 6 — look for "Created PR 123" or parse URL.`
     : '';
 
-  // Azure uses different merge terminology
   const mergeDescription = requiresPrIdExtraction
-    ? 'SET AUTO-COMPLETE (MANDATORY - THIS IS NOT OPTIONAL)'
+    ? 'SET AUTO-COMPLETE'
     : usesMergeQueue
-      ? `ENQUEUE INTO MERGE QUEUE AND WAIT UNTIL THE ${prName} IS MERGED (MANDATORY - THIS IS NOT OPTIONAL)`
-      : `MERGE THE ${prName} (MANDATORY - THIS IS NOT OPTIONAL)`;
+      ? `ENQUEUE INTO MERGE QUEUE AND WAIT UNTIL MERGED`
+      : `MERGE THE ${prName}`;
 
   const mergeExplanation = requiresPrIdExtraction
-    ? `Replace <PR_ID> with the actual PR number from step 5.
-This enables auto-complete (auto-merge when CI passes).
+    ? `Replace <PR_ID> with actual PR number from step 5. Enables auto-complete (merges when CI passes).
 
-If auto-complete is not available or you need to merge immediately:`
+If auto-complete unavailable:`
     : usesMergeQueue
-      ? `This enqueues the ${prName} into GitHub's merge queue and waits until it is merged.
+      ? `Enqueues ${prName} into merge queue and waits until merged.
 
-If enqueue fails (merge queue not enabled, missing permissions, etc.), fall back to auto-merge:`
-      : `This sets auto-merge. If it fails (e.g., no auto-merge enabled), try:`;
+If enqueue fails, fall back:`
+      : `Sets auto-merge. If it fails, try:`;
 
   const postMergeStatus = requiresPrIdExtraction
     ? 'PR IS CREATED AND AUTO-COMPLETE IS SET'
     : `${prName} IS MERGED`;
 
   const finalOutputNote = requiresPrIdExtraction
-    ? `ONLY after the PR is created and auto-complete is set, output:
+    ? `ONLY after PR created and auto-complete set:
 \`\`\`json
 {"${outputFields.urlField}": "${prUrlExample}", "${outputFields.numberField}": 123, "merged": false, "auto_complete": true}
 \`\`\`
 
-If truly no changes exist, output:
+No changes:
 \`\`\`json
 {"${outputFields.urlField}": null, "${outputFields.numberField}": null, "merged": false, "auto_complete": false}
 \`\`\``
-    : `ONLY after the ${prName} is MERGED, output:
+    : `ONLY after ${prName} is MERGED:
 \`\`\`json
 {"${outputFields.urlField}": "${prUrlExample}", "${outputFields.numberField}": 123, "merged": true}
 \`\`\`
 
-If truly no changes exist, output:
+No changes:
 \`\`\`json
 {"${outputFields.urlField}": null, "${outputFields.numberField}": null, "merged": false}
 \`\`\``;
 
-  return `🚨 CRITICAL: ALL VALIDATORS APPROVED. YOU MUST CREATE A ${prName} AND GET IT MERGED. DO NOT STOP UNTIL THE ${prName} IS MERGED. 🚨
+  return `ALL VALIDATORS APPROVED. Create ${prName} and merge. Do not stop until ${postMergeStatus}.
 
-## MANDATORY STEPS - EXECUTE EACH ONE IN ORDER - DO NOT SKIP ANY STEP
+## Steps — execute in order
 
-### STEP 1: Stage ALL changes (MANDATORY)
+### 1: Stage changes
 \`\`\`bash
 git add -A
 \`\`\`
-Run this command. Do not skip it.
 
-### STEP 2: Check what's staged
+### 2: Check staged
 \`\`\`bash
 git status
 \`\`\`
-Run this. If nothing to commit, output JSON with ${outputFields.urlField}: null and stop.
+Nothing to commit → output JSON with ${outputFields.urlField}: null and stop.
 
-### STEP 3: Commit the changes (MANDATORY if there are changes)
+### 3: Commit
 \`\`\`bash
 git commit -m "feat: implement #{{issue_number}} - {{issue_title}}"
 \`\`\`
-Run this command. Do not skip it.
 
-### STEP 4: Push to origin (MANDATORY)
+### 4: Push
 \`\`\`bash
 git push -u origin HEAD
 \`\`\`
-Run this. If it fails, check the error and fix it.
+Do NOT stop here. Continue to step 5.
 
-⚠️ AFTER PUSH YOU ARE NOT DONE! CONTINUE TO STEP 5! ⚠️
-
-### STEP 5: CREATE THE ${prName.toUpperCase()} (MANDATORY - YOU MUST RUN THIS COMMAND)
+### 5: Create ${prName}
 \`\`\`bash
 ${createCmd}
 \`\`\`
-🚨 YOU MUST RUN \`${createCmd.split(' ').slice(0, 3).join(' ')}\`! Outputting a link is NOT creating a ${prName}! 🚨
-The push output shows a "Create a ${prNameLower}" link - IGNORE IT.
-You MUST run the \`${createCmd.split(' ').slice(0, 3).join(' ')}\` command above.${requiresPrIdExtraction ? '' : ` Save the actual ${prName} URL from the output.`}${azurePrIdNote}
+Run \`${createCmd.split(' ').slice(0, 3).join(' ')}\`. Ignore push output link — that is NOT a ${prNameLower}.${requiresPrIdExtraction ? '' : ` Save actual ${prName} URL from output.`}${azurePrIdNote}
+Do NOT stop here. Continue to step 6.
 
-⚠️ AFTER ${prName} CREATION YOU ARE NOT DONE! CONTINUE TO STEP 6! ⚠️
-
-### STEP 6: ${mergeDescription}
+### 6: ${mergeDescription} (MANDATORY)
 \`\`\`bash
 ${mergeCmd}
 \`\`\`
@@ -329,33 +317,17 @@ ${mergeExplanation}
 ${mergeFallbackCmd}
 \`\`\`
 
-🚨 IF MERGE FAILS DUE TO CONFLICTS - YOU MUST RESOLVE THEM:
-a) Pull latest ${rebaseBranch || 'main'} and rebase:
-   \`\`\`bash
-   git fetch origin ${rebaseBranch || 'main'}
-   git rebase origin/${rebaseBranch || 'main'}
-   \`\`\`
-b) If conflicts appear - RESOLVE THEM IMMEDIATELY:
-   - Read the conflicting files
-   - Make intelligent decisions about what code to keep
-   - Edit the files to resolve conflicts
-   - \`git add <resolved-files>\`
-   - \`git rebase --continue\`
-c) Force push the resolved branch:
-   \`\`\`bash
-   git push --force-with-lease
-   \`\`\`
-d) Retry merge:
-   \`\`\`bash
-${mergeFallbackCmd}
-\`\`\`
+If merge fails due to conflicts:
+1. \`git fetch origin ${rebaseBranch || 'main'} && git rebase origin/${rebaseBranch || 'main'}\`
+2. Resolve conflicts, \`git add <resolved-files>\`, \`git rebase --continue\`
+3. \`git push --force-with-lease\`
+4. Retry: \`${mergeFallbackCmd}\`
 
-REPEAT UNTIL MERGED. DO NOT GIVE UP. DO NOT SKIP. THE ${prName} MUST BE ${requiresPrIdExtraction ? 'SET TO AUTO-COMPLETE' : 'MERGED'}.
-If merge is blocked by CI, wait and retry. ${requiresPrIdExtraction ? 'The auto-complete will merge when CI passes.' : 'If blocked by reviews, set auto-merge.'}
+Repeat until merged. Do not give up.${requiresPrIdExtraction ? ' Auto-complete merges when CI passes.' : ' If blocked by CI, wait and retry. If blocked by reviews, set auto-merge.'}
 
 ${
   closeIssueMode !== 'never'
-    ? `### STEP 7: Close the issue (MANDATORY)
+    ? `### 7: Close issue
 \`\`\`bash
 if [ "{{issue_number}}" != "unknown" ]; then
   ISSUE_STATE="$(gh issue view {{issue_number}} --json state --jq .state 2>/dev/null || true)"
@@ -382,23 +354,12 @@ if [ "{{issue_number}}" != "unknown" ]; then
   fi
 fi
 \`\`\`
-Only do this AFTER the ${prName} is merged.`
+Only after ${prName} is merged.`
     : ''
 }
 
-## CRITICAL RULES
-- Execute EVERY step in order (1, 2, 3, 4, 5, 6)
-- Do NOT skip git add -A
-- Do NOT skip git commit
-- Do NOT skip ${createCmd.split(' ').slice(0, 3).join(' ')} - THE TASK IS NOT DONE UNTIL ${prName} EXISTS
-- Do NOT skip ${mergeCmd.split(' ').slice(0, 4).join(' ')} - THE TASK IS NOT DONE UNTIL ${postMergeStatus}${requiresPrIdExtraction ? '\n- MUST extract PR ID from step 5 output to use in step 6' : ''}
-- If push fails, debug and fix it
-- If ${prName} creation fails, debug and fix it
-- If ${requiresPrIdExtraction ? 'auto-complete' : 'merge'} fails, debug and fix it
-- DO NOT OUTPUT JSON UNTIL ${postMergeStatus}
-- A link from git push is NOT a ${prName} - you must run ${createCmd.split(' ').slice(0, 3).join(' ')}
-
-## Final Output
+## Output
+DO NOT output JSON until ${postMergeStatus}.
 ${finalOutputNote}`;
 }
 
