@@ -327,14 +327,14 @@ describe('Doc Draft Workflow — Template Resolution', function () {
     it('facet tier renders correct perspective count', function () {
       const resolved = resolveWorkflow({ tier: 'facet', validator_count: 1, max_iterations: 3 });
       const drafter = resolved.agents.find((a) => a.id === 'drafter');
-      assert.ok(drafter.prompt.initial.includes('FACET tier'));
+      assert.ok(drafter.prompt.initial.includes('FACET:'));
       assert.ok(drafter.prompt.initial.includes('2-3 perspectives'));
     });
 
     it('lens tier renders correct perspective count', function () {
       const resolved = resolveWorkflow({ tier: 'lens' });
       const drafter = resolved.agents.find((a) => a.id === 'drafter');
-      assert.ok(drafter.prompt.initial.includes('LENS tier'));
+      assert.ok(drafter.prompt.initial.includes('LENS:'));
       assert.ok(drafter.prompt.initial.includes('3-5 perspectives'));
     });
 
@@ -345,7 +345,7 @@ describe('Doc Draft Workflow — Template Resolution', function () {
         validator_count: 3,
       });
       const drafter = resolved.agents.find((a) => a.id === 'drafter');
-      assert.ok(drafter.prompt.initial.includes('PRISM tier'));
+      assert.ok(drafter.prompt.initial.includes('PRISM:'));
       assert.ok(drafter.prompt.initial.includes('5-8 perspectives'));
     });
 
@@ -357,7 +357,7 @@ describe('Doc Draft Workflow — Template Resolution', function () {
       });
       const drafter = resolved.agents.find((a) => a.id === 'drafter');
       assert.ok(
-        drafter.prompt.initial.includes('BATCHES of at most 4'),
+        drafter.prompt.initial.includes('max 4 Task calls per message'),
         'Prism initial prompt should include batching guidance'
       );
       assert.ok(
@@ -374,7 +374,7 @@ describe('Doc Draft Workflow — Template Resolution', function () {
       });
       const drafter = resolved.agents.find((a) => a.id === 'drafter');
       assert.ok(
-        drafter.prompt.subsequent.includes('at most 4 per message'),
+        drafter.prompt.subsequent.includes('max 4 per message'),
         'Prism subsequent prompt should include batching guidance for revisions'
       );
     });
@@ -383,7 +383,7 @@ describe('Doc Draft Workflow — Template Resolution', function () {
       const resolved = resolveWorkflow();
       const drafter = resolved.agents.find((a) => a.id === 'drafter');
       assert.ok(
-        drafter.prompt.initial.includes('high information density'),
+        drafter.prompt.initial.includes('High density'),
         'Subagent template should include terseness guidance'
       );
     });
@@ -587,8 +587,8 @@ describe('Doc Draft Workflow — Expanded Document Types', function () {
     const resolved = resolveWorkflow();
     const drafter = resolved.agents.find((a) => a.id === 'drafter');
     assert.ok(
-      drafter.prompt.initial.includes('### Questionnaires'),
-      'Should contain ### Questionnaires section'
+      drafter.prompt.initial.includes('Questionnaires:'),
+      'Should contain Questionnaires section'
     );
     assert.ok(
       drafter.prompt.initial.includes('Stakeholder Mapper'),
@@ -600,8 +600,8 @@ describe('Doc Draft Workflow — Expanded Document Types', function () {
     const resolved = resolveWorkflow();
     const drafter = resolved.agents.find((a) => a.id === 'drafter');
     assert.ok(
-      drafter.prompt.initial.includes('### Requirements'),
-      'Should contain ### Requirements section'
+      drafter.prompt.initial.includes('Requirements:'),
+      'Should contain Requirements section'
     );
     assert.ok(
       drafter.prompt.initial.includes('Functional Requirements Analyst'),
@@ -613,8 +613,8 @@ describe('Doc Draft Workflow — Expanded Document Types', function () {
     const resolved = resolveWorkflow();
     const drafter = resolved.agents.find((a) => a.id === 'drafter');
     assert.ok(
-      drafter.prompt.initial.includes('### Acceptance Criteria'),
-      'Should contain ### Acceptance Criteria section'
+      drafter.prompt.initial.includes('Acceptance Criteria:'),
+      'Should contain Acceptance Criteria section'
     );
     assert.ok(
       drafter.prompt.initial.includes('Scenario Writer'),
@@ -625,10 +625,7 @@ describe('Doc Draft Workflow — Expanded Document Types', function () {
   it('drafter prompt contains Test Plans perspective section', function () {
     const resolved = resolveWorkflow();
     const drafter = resolved.agents.find((a) => a.id === 'drafter');
-    assert.ok(
-      drafter.prompt.initial.includes('### Test Plans'),
-      'Should contain ### Test Plans section'
-    );
+    assert.ok(drafter.prompt.initial.includes('Test Plans:'), 'Should contain Test Plans section');
     assert.ok(
       drafter.prompt.initial.includes('Coverage Strategist'),
       'Should contain Coverage Strategist perspective'
@@ -643,7 +640,7 @@ describe('Doc Draft Workflow — Expanded Document Types', function () {
       'Should contain MANDATORY directive when has_action_items is true'
     );
     assert.ok(
-      drafter.prompt.initial.includes('actionable items requiring atomic'),
+      drafter.prompt.initial.includes('actionable items needing atomic'),
       'Should explain why action perspectives are mandatory'
     );
   });

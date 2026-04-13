@@ -255,7 +255,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
         'Should include MANDATORY Security Reviewer'
       );
       assert.ok(
-        !analyst.prompt.initial.includes('Security Reviewer** (INACTIVE'),
+        !analyst.prompt.initial.includes('Security Reviewer (INACTIVE'),
         'Should NOT include INACTIVE Security Reviewer'
       );
     });
@@ -264,7 +264,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
       const resolved = resolveWorkflow({ has_security_surface: false });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       assert.ok(
-        analyst.prompt.initial.includes('Security Reviewer** (INACTIVE'),
+        analyst.prompt.initial.includes('Security Reviewer (INACTIVE'),
         'Should include INACTIVE Security Reviewer'
       );
       assert.ok(
@@ -281,7 +281,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
         'Should include MANDATORY Test Coverage Analyst'
       );
       assert.ok(
-        !analyst.prompt.initial.includes('Test Coverage Analyst** (INACTIVE'),
+        !analyst.prompt.initial.includes('Test Coverage Analyst (INACTIVE'),
         'Should NOT include INACTIVE Test Coverage Analyst'
       );
     });
@@ -290,7 +290,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
       const resolved = resolveWorkflow({ has_test_changes: false });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       assert.ok(
-        analyst.prompt.initial.includes('Test Coverage Analyst** (INACTIVE'),
+        analyst.prompt.initial.includes('Test Coverage Analyst (INACTIVE'),
         'Should include INACTIVE Test Coverage Analyst'
       );
       assert.ok(
@@ -307,7 +307,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
         'Should include MANDATORY API/Interface Reviewer'
       );
       assert.ok(
-        !analyst.prompt.initial.includes('API/Interface Reviewer** (INACTIVE'),
+        !analyst.prompt.initial.includes('API/Interface Reviewer (INACTIVE'),
         'Should NOT include INACTIVE API/Interface Reviewer'
       );
     });
@@ -316,7 +316,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
       const resolved = resolveWorkflow({ has_api_changes: false });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       assert.ok(
-        analyst.prompt.initial.includes('API/Interface Reviewer** (INACTIVE'),
+        analyst.prompt.initial.includes('API/Interface Reviewer (INACTIVE'),
         'Should include INACTIVE API/Interface Reviewer'
       );
       assert.ok(
@@ -352,7 +352,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
         validator_count: 1,
       });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
-      assert.ok(analyst.prompt.initial.includes('BELL tier'), 'Should render BELL tier rules');
+      assert.ok(analyst.prompt.initial.includes('BELL:'), 'Should render BELL tier rules');
     });
 
     it('book tier renders correct spawning rules', function () {
@@ -361,7 +361,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
         validator_count: 2,
       });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
-      assert.ok(analyst.prompt.initial.includes('BOOK tier'), 'Should render BOOK tier rules');
+      assert.ok(analyst.prompt.initial.includes('BOOK:'), 'Should render BOOK tier rules');
     });
 
     it('candle tier renders correct spawning rules', function () {
@@ -371,7 +371,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
         validator_count: 2,
       });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
-      assert.ok(analyst.prompt.initial.includes('CANDLE tier'), 'Should render CANDLE tier rules');
+      assert.ok(analyst.prompt.initial.includes('CANDLE:'), 'Should render CANDLE tier rules');
     });
   });
 
@@ -386,7 +386,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
       });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       assert.ok(
-        analyst.prompt.initial.includes('BATCHES of at most 4'),
+        analyst.prompt.initial.includes('max 4 Task calls per message'),
         'Candle initial prompt should include batching guidance'
       );
       assert.ok(
@@ -394,7 +394,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
         'Candle initial prompt should NOT include single-message spawning'
       );
       assert.ok(
-        analyst.prompt.subsequent.includes('BATCHES of at most 4'),
+        analyst.prompt.subsequent.includes('batches of max 4'),
         'Candle subsequent prompt should include batching guidance'
       );
       assert.ok(
@@ -407,7 +407,7 @@ describe('Code Review Workflow — Validators & Boolean Params', function () {
       const resolved = resolveWorkflow();
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       assert.ok(
-        analyst.prompt.initial.includes('high information density'),
+        analyst.prompt.initial.includes('Max density'),
         'Subagent template should include terseness guidance'
       );
     });

@@ -249,14 +249,14 @@ describe('CANNOT_VALIDATE Context Builder - Core Behavior', function () {
 
     const context = buildContext(baseContextParams({ messageBus: mockBusWithCriteria(criteria) }));
 
-    assert.ok(context.includes('Permanently Unverifiable Criteria'), 'Missing header');
+    assert.ok(context.includes('SKIP — Unverifiable Criteria'), 'Missing header');
     assert.ok(context.includes('AC2'), 'Missing AC2');
     assert.ok(context.includes('kubectl not installed'), 'Missing AC2 reason');
     assert.ok(context.includes('AC3'), 'Missing AC3');
     assert.ok(context.includes('No SSH access'), 'Missing AC3 reason');
-    assert.ok(!context.includes('**AC1**'), 'Should not include PASS criteria');
-    assert.ok(!context.includes('**AC4**'), 'Should not include FAIL criteria');
-    assert.ok(context.includes('Do NOT re-attempt'), 'Missing skip instruction');
+    assert.ok(!context.includes('- AC1:'), 'Should not include PASS criteria');
+    assert.ok(!context.includes('- AC4:'), 'Should not include FAIL criteria');
+    assert.ok(context.includes('CANNOT_VALIDATE again'), 'Missing skip instruction');
   });
 
   it('should ignore platform mismatch reasons when running in docker isolation', function () {
@@ -276,9 +276,9 @@ describe('CANNOT_VALIDATE Context Builder - Core Behavior', function () {
       })
     );
 
-    assert.ok(!context.includes('**AC1**'), 'Should skip platform mismatch criteria');
+    assert.ok(!context.includes('- AC1:'), 'Should skip platform mismatch criteria');
     assert.ok(!context.includes('EBADPLATFORM'), 'Should remove platform mismatch reason');
-    assert.ok(context.includes('**AC2**'), 'Should keep non-platform criteria');
+    assert.ok(context.includes('AC2'), 'Should keep non-platform criteria');
   });
 
   it('should NOT inject skip section for non-validator roles', function () {
@@ -332,7 +332,7 @@ describe('CANNOT_VALIDATE Context Builder - Core Behavior', function () {
 
     const context = buildContext(baseContextParams({ messageBus }));
 
-    const matches = context.match(/\*\*AC1\*\*/g) || [];
+    const matches = context.match(/- AC1:/g) || [];
     assert.strictEqual(matches.length, 1, `AC1 appeared ${matches.length} times, expected 1`);
   });
 });
@@ -622,11 +622,11 @@ describe('CANNOT_VALIDATE_YET Context Builder - Not Skipped on Retry', function 
     const context = buildContext(baseContextParams({ messageBus: mockBusWithCriteria(criteria) }));
 
     assert.ok(
-      !context.includes('Permanently Unverifiable'),
+      !context.includes('SKIP — Unverifiable'),
       'Should NOT have skip section for CANNOT_VALIDATE_YET'
     );
     assert.ok(
-      !context.includes('SKIP THESE'),
+      !context.includes('CANNOT_VALIDATE again'),
       'Should NOT have skip instruction for CANNOT_VALIDATE_YET'
     );
   });
@@ -642,7 +642,7 @@ describe('CANNOT_VALIDATE_YET Context Builder - Not Skipped on Retry', function 
     assert.ok(context.includes('AC1'), 'AC1 should be in skip section');
     assert.ok(context.includes('kubectl not installed'), 'AC1 reason should be in skip section');
 
-    const skipSection = context.match(/Permanently Unverifiable Criteria[\s\S]*?(?=\n## |$)/)?.[0];
+    const skipSection = context.match(/SKIP — Unverifiable Criteria[\s\S]*?(?=\n## |$)/)?.[0];
     if (skipSection) {
       assert.ok(!skipSection.includes('AC2'), 'AC2 should NOT be in skip section');
       assert.ok(
@@ -675,7 +675,7 @@ describe('CANNOT_VALIDATE_YET Context Builder - Not Skipped on Retry', function 
     const context = buildContext(baseContextParams({ iteration: 3, messageBus }));
 
     assert.ok(
-      !context.includes('AC1') || !context.includes('Permanently Unverifiable'),
+      !context.includes('AC1') || !context.includes('SKIP — Unverifiable'),
       'CANNOT_VALIDATE_YET should never be skipped'
     );
   });

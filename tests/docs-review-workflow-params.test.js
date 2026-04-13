@@ -336,7 +336,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
         'Should include MANDATORY Test Design Critic'
       );
       assert.ok(
-        !analyst.prompt.initial.includes('Test Design Critic** (INACTIVE'),
+        !analyst.prompt.initial.includes('Test Design Critic (INACTIVE'),
         'Should NOT include INACTIVE Test Design Critic'
       );
     });
@@ -345,7 +345,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
       const resolved = resolveWorkflow({ has_test_content: false });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       assert.ok(
-        analyst.prompt.initial.includes('Test Design Critic** (INACTIVE'),
+        analyst.prompt.initial.includes('Test Design Critic (INACTIVE'),
         'Should include INACTIVE Test Design Critic'
       );
       assert.ok(
@@ -362,7 +362,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
         'Should include MANDATORY Chain Validator'
       );
       assert.ok(
-        !analyst.prompt.initial.includes('Chain Validator** (INACTIVE'),
+        !analyst.prompt.initial.includes('Chain Validator (INACTIVE'),
         'Should NOT include INACTIVE Chain Validator'
       );
     });
@@ -371,7 +371,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
       const resolved = resolveWorkflow({ is_chain: false });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       assert.ok(
-        analyst.prompt.initial.includes('Chain Validator** (INACTIVE'),
+        analyst.prompt.initial.includes('Chain Validator (INACTIVE'),
         'Should include INACTIVE Chain Validator'
       );
       assert.ok(
@@ -388,7 +388,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
         'Should include MANDATORY Security/Domain Specialist'
       );
       assert.ok(
-        !analyst.prompt.initial.includes('Security/Domain Specialist** (INACTIVE'),
+        !analyst.prompt.initial.includes('Security/Domain Specialist (INACTIVE'),
         'Should NOT include INACTIVE Security/Domain Specialist'
       );
     });
@@ -397,7 +397,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
       const resolved = resolveWorkflow({ is_sensitive: false });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       assert.ok(
-        analyst.prompt.initial.includes('Security/Domain Specialist** (INACTIVE'),
+        analyst.prompt.initial.includes('Security/Domain Specialist (INACTIVE'),
         'Should include INACTIVE Security/Domain Specialist'
       );
       assert.ok(
@@ -426,9 +426,9 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
         has_test_content: true,
       });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
-      assert.ok(analyst.prompt.initial.includes('TRACE tier'), 'Should render TRACE tier rules');
+      assert.ok(analyst.prompt.initial.includes('TRACE:'), 'Should render TRACE tier rules');
       assert.ok(
-        analyst.prompt.initial.includes('MANDATORY perspectives from boolean params'),
+        analyst.prompt.initial.includes('MANDATORY conditionals'),
         'TRACE tier rules should mention MANDATORY perspectives'
       );
     });
@@ -442,24 +442,21 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
       const evidence = resolved.agents.find((a) => a.id === 'validator-evidence');
       const prompt = evidence.prompt.system;
       assert.ok(prompt.includes('ARTIFACT FACT-CHECKER'), 'Should identify as fact-checker');
-      assert.ok(prompt.includes('FACTUAL VERIFICATION ONLY'), 'Should focus on facts');
-      assert.ok(
-        prompt.includes("rigor validator's job"),
-        'Should reference rigor for reasoning checks'
-      );
+      assert.ok(prompt.includes('facts only'), 'Should focus on facts');
+      assert.ok(prompt.includes("rigor's job"), 'Should reference rigor for reasoning checks');
     });
 
     it('rigor prompt focuses on reasoning, not factual claims', function () {
       const resolved = resolveWorkflow();
       const rigor = resolved.agents.find((a) => a.id === 'validator-rigor');
       const prompt = rigor.prompt.system;
-      assert.ok(prompt.includes('REASONING QUALITY ONLY'), 'Should focus on reasoning');
+      assert.ok(prompt.includes('Reasoning quality only'), 'Should focus on reasoning');
       assert.ok(
         prompt.includes("evidence validator's job"),
         'Should reference evidence for fact-checking'
       );
       assert.ok(
-        prompt.includes('Assume quoted text is accurate'),
+        prompt.includes('Assume quoted text accurate'),
         'Should not re-verify artifact claims'
       );
     });
@@ -476,7 +473,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
       });
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       assert.ok(
-        analyst.prompt.initial.includes('BATCHES of at most 4'),
+        analyst.prompt.initial.includes('max 4 Task calls per message'),
         'Axiom initial prompt should include batching guidance'
       );
       assert.ok(
@@ -484,7 +481,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
         'Axiom initial prompt should NOT include single-message spawning'
       );
       assert.ok(
-        analyst.prompt.subsequent.includes('BATCHES of at most 4'),
+        analyst.prompt.subsequent.includes('max 4 subagents per message'),
         'Axiom subsequent prompt should include batching guidance'
       );
       assert.ok(
@@ -497,7 +494,7 @@ describe('Review Workflow — Boolean Params & Conditional Validators', function
       const resolved = resolveWorkflow();
       const analyst = resolved.agents.find((a) => a.id === 'analyst');
       assert.ok(
-        analyst.prompt.initial.includes('high information density'),
+        analyst.prompt.initial.includes('Max density'),
         'Subagent template should include terseness guidance'
       );
     });

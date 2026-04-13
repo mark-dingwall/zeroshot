@@ -180,7 +180,7 @@ describe('Guidance queue placement in context', () => {
 
     const instructionsIndex = context.indexOf('## Instructions');
     const guidanceIndex = context.indexOf('## Guidance (Queued)');
-    const outputSchemaIndex = context.indexOf('## 🔴 OUTPUT FORMAT - JSON ONLY');
+    const outputSchemaIndex = context.indexOf('## JSON OUTPUT — REQUIRED');
 
     assert(instructionsIndex !== -1, 'instructions present');
     assert(guidanceIndex !== -1, 'guidance present');
