@@ -330,7 +330,7 @@ describe('quality-gate-runner.js', function () {
     assert.strictEqual(config.source, 'heuristic-failed');
   });
 
-  it('should NOT flag llm source on command failure', function () {
+  it('should flag llm source as llm-failed on command failure', function () {
     process.env.ZEROSHOT_PROJECTS_DIR = projectsDir;
     delete require.cache[require.resolve('../lib/project-config')];
     const { saveProjectConfig } = require('../lib/project-config');
@@ -351,11 +351,11 @@ describe('quality-gate-runner.js', function () {
       assert.ok(error.status > 0);
     }
 
-    // Verify source unchanged
+    // Verify source updated to llm-failed
     delete require.cache[require.resolve('../lib/project-config')];
     const { loadProjectConfig: reload } = require('../lib/project-config');
     const config = reload(tmpDir);
-    assert.strictEqual(config.source, 'llm');
+    assert.strictEqual(config.source, 'llm-failed');
   });
 
   it('should run command from .zeroshot-quality and exit non-zero on failure', function () {
