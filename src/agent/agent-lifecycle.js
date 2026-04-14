@@ -28,6 +28,7 @@ const { findPlatformMismatchReason } = require('./validation-platform');
 const safeExec = require('../lib/safe-exec');
 const path = require('path');
 const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
+const { killTask } = require('./agent-task-executor');
 
 const DEFAULT_VALIDATOR_IMAGE = 'zeroshot-cluster-base';
 
@@ -955,6 +956,10 @@ async function executeTask(agent, triggeringMessage) {
       maxRetries = updated.maxRetries;
       sigtermRetryGranted = updated.sigtermRetryGranted;
       noMessagesRetryGranted = updated.noMessagesRetryGranted;
+      // Kill orphan task before retry — prevents accumulating zombie processes
+      killTask(agent);
+      agent.processPid = null;
+
       const shouldStop = await handleTaskAttemptFailure({
         agent,
         triggeringMessage,

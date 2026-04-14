@@ -1096,6 +1096,9 @@ function handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, re
   }
 
   state.consecutiveExecFailures++;
+  agent._log(
+    `[${agent.id}] Status exec error (${state.consecutiveExecFailures}/${MAX_STATUS_FAILURES}): ${error.message || 'unknown'}`
+  );
   if (state.consecutiveExecFailures < MAX_STATUS_FAILURES) {
     return true;
   }
@@ -1150,6 +1153,21 @@ function handleStatusCompletion({
   const { isCompleted, isFailed, isStale } = parseStatusFlags(cleanStdout);
 
   if (!isCompleted && !isFailed && !isStale) {
+    return false;
+  }
+
+  // Diagnostic: log full status output on terminal state detection
+  agent._log(
+    `[${agent.id}] Status check terminal: completed=${isCompleted} failed=${isFailed} stale=${isStale} stdout=${cleanStdout.slice(0, 300)}`
+  );
+
+  // Stale + empty output = status check fired before task produced output.
+  // With strictSchema: true, log files are always empty during execution.
+  // Continue polling instead of resolving as failed.
+  if (isStale && !state.output) {
+    agent._log(
+      `[${agent.id}] ⚠️ Stale with empty output — continuing to poll (likely premature status check)`
+    );
     return false;
   }
 
@@ -1939,4 +1957,6 @@ module.exports = {
   getClaudeTasksPath,
   parseResultOutput,
   killTask,
+  // Exported for testing
+  handleStatusCompletion,
 };
