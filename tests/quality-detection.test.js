@@ -14,6 +14,7 @@ const {
   buildCLIArgs,
   SOURCE_HEURISTIC,
   SOURCE_HEURISTIC_FAILED,
+  SOURCE_LLM_FAILED,
 } = require('../lib/quality-detection');
 
 function makeTmpDir() {
@@ -520,6 +521,59 @@ describe('ensureQualityConfig', function () {
     assert.strictEqual(config.source, SOURCE_HEURISTIC);
   });
 
+  it('should re-detect when source is llm-failed', function () {
+    const projectDir = path.join(tmpDir, 'myproject');
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    // Pre-create llm-failed config, then add ecosystem files
+    getProjectConfig().saveProjectConfig(projectDir, {
+      qualityCommand: null,
+      source: SOURCE_LLM_FAILED,
+      ecosystems: [],
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    // Now add project files so heuristic succeeds on retry
+    writeFile(
+      projectDir,
+      'package.json',
+      JSON.stringify({
+        scripts: { test: 'jest' },
+      })
+    );
+
+    const result = getQualityDetection().ensureQualityConfig(projectDir);
+
+    // LLM detection will fail (no CLI available in test), but heuristic retry should succeed
+    assert.strictEqual(result.created, true);
+    assert.ok(result.command.includes('npm test'));
+
+    const config = getProjectConfig().loadProjectConfig(projectDir);
+    assert.strictEqual(config.source, SOURCE_HEURISTIC);
+  });
+
+  it('should retroactively sanitize backtick-wrapped LLM command', function () {
+    const projectDir = path.join(tmpDir, 'myproject');
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    // Pre-create LLM config with backtick-wrapped command (pre-fix poisoned data)
+    getProjectConfig().saveProjectConfig(projectDir, {
+      qualityCommand: '`npm run lint && npm test`',
+      source: 'llm',
+      ecosystems: [],
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const result = getQualityDetection().ensureQualityConfig(projectDir);
+
+    // Should return early (not re-detect) but sanitize the stored command
+    assert.strictEqual(result.created, false);
+
+    const config = getProjectConfig().loadProjectConfig(projectDir);
+    assert.strictEqual(config.qualityCommand, 'npm run lint && npm test');
+    assert.strictEqual(config.source, 'llm');
+  });
+
   it('should not write to project directory (no .zeroshot-quality, no .gitignore changes)', function () {
     const projectDir = path.join(tmpDir, 'myproject');
     fs.mkdirSync(projectDir, { recursive: true });
@@ -563,6 +617,21 @@ describe('sanitizeLLMResponse', function () {
   it('should return null for empty input', function () {
     assert.strictEqual(sanitizeLLMResponse(''), null);
     assert.strictEqual(sanitizeLLMResponse(null), null);
+  });
+
+  it('should strip inline backticks', function () {
+    assert.strictEqual(sanitizeLLMResponse('`npm test`'), 'npm test');
+  });
+
+  it('should strip leading $ prompt', function () {
+    assert.strictEqual(sanitizeLLMResponse('$ npm test'), 'npm test');
+  });
+
+  it('should strip inline backticks and leading $ combined', function () {
+    assert.strictEqual(
+      sanitizeLLMResponse('`$ npm run lint && npm test`'),
+      'npm run lint && npm test'
+    );
   });
 });
 

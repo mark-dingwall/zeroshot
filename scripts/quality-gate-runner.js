@@ -82,12 +82,13 @@ function run() {
 
   // Flag heuristic-detected commands as failed so LLM re-detection is tried next time
   if (exitCode !== 0 && commandSource === 'project-config' && projectConfig) {
-    if (projectConfig.source === 'heuristic') {
+    if (projectConfig.source === 'heuristic' || projectConfig.source === 'llm') {
+      const failedSource = projectConfig.source === 'heuristic' ? 'heuristic-failed' : 'llm-failed';
       try {
         const { saveProjectConfig } = require('../lib/project-config');
         saveProjectConfig(cwd, {
           ...projectConfig,
-          source: 'heuristic-failed',
+          source: failedSource,
           updatedAt: new Date().toISOString(),
         });
       } catch {
