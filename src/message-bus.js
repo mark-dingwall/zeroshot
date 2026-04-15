@@ -241,6 +241,9 @@ class MessageBus extends EventEmitter {
     }
     this.wsClients.clear();
 
+    // Drop subscribers so lingering handlers don't keep refs alive
+    this.removeAllListeners();
+
     // Close ledger
     this.ledger.close();
   }

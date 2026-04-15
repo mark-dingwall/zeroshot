@@ -1966,6 +1966,52 @@ class Orchestrator {
   }
 
   /**
+   * Full orchestrator shutdown — release every resource that could keep
+   * the event loop alive after terminal cluster state. Safe to call after
+   * cluster.stop() / kill() have already run.
+   */
+  async shutdown() {
+    // `await` a zero-tick promise so the method keeps its async contract
+    // (future resource closers may be truly async) without tripping
+    // require-await today.
+    await Promise.resolve();
+    this.closed = true;
+
+    for (const cluster of this.clusters.values()) {
+      try {
+        if (cluster._maxIterSafetyTimeout) {
+          clearTimeout(cluster._maxIterSafetyTimeout);
+          cluster._maxIterSafetyTimeout = null;
+        }
+
+        if (cluster.snapshotter) {
+          try {
+            cluster.snapshotter.stop();
+          } catch {
+            // Already stopped
+          }
+        }
+
+        if (cluster.messageBus && typeof cluster.messageBus.close === 'function') {
+          try {
+            cluster.messageBus.close();
+          } catch {
+            // Ledger may already be closed
+          }
+        } else if (cluster.ledger && typeof cluster.ledger.close === 'function') {
+          try {
+            cluster.ledger.close();
+          } catch {
+            // Already closed
+          }
+        }
+      } catch (error) {
+        this._log(`[Orchestrator] shutdown: error releasing ${cluster.id}: ${error.message}`);
+      }
+    }
+  }
+
+  /**
    * Find the last workflow-triggering message in the ledger
    * Workflow triggers indicate cluster state progression (not AGENT_OUTPUT noise)
    * @param {Array} messages - All messages from ledger

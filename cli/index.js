@@ -536,12 +536,32 @@ function setupForegroundSigintHandler({ orchestrator, clusterId, cleanup, stopCh
   };
 }
 
+function waitForTerminalState(orchestrator, clusterId, intervalMs = 500) {
+  return new Promise((resolve) => {
+    const intervalId = setInterval(() => {
+      let terminal = false;
+      let statusError = false;
+      try {
+        const status = orchestrator.getStatus(clusterId);
+        terminal = status.state !== 'running';
+      } catch {
+        statusError = true;
+      }
+      if (terminal || statusError) {
+        clearInterval(intervalId);
+        resolve({ statusError });
+      }
+    }, intervalMs);
+  });
+}
+
 function waitForClusterCompletion(orchestrator, clusterId, cleanup) {
   return new Promise((resolve) => {
     let checkInterval;
     const stopChecking = () => {
       if (checkInterval) {
         clearInterval(checkInterval);
+        checkInterval = null;
       }
     };
     const removeSigint = setupForegroundSigintHandler({
@@ -569,6 +589,11 @@ function waitForClusterCompletion(orchestrator, clusterId, cleanup) {
       }
     }, 500);
   });
+}
+
+async function waitForDaemonCompletion(orchestrator, clusterId) {
+  await waitForTerminalState(orchestrator, clusterId);
+  console.log(`[DAEMON] Cluster ${clusterId} reached terminal state`);
 }
 
 async function streamClusterInForeground(cluster, orchestrator, clusterId) {
@@ -2465,11 +2490,19 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps)
         throw new Error('Invalid run input: expected text, issue, or file');
       }
 
-      if (!process.env.ZEROSHOT_DAEMON) {
+      if (process.env.ZEROSHOT_DAEMON) {
+        setupDaemonCleanup(orchestrator, clusterId);
+        await waitForDaemonCompletion(orchestrator, clusterId);
+      } else {
         await streamClusterInForeground(cluster, orchestrator, clusterId);
       }
 
-      setupDaemonCleanup(orchestrator, clusterId);
+      try {
+        await orchestrator.shutdown();
+      } catch (shutdownErr) {
+        console.error(`[Orchestrator] shutdown error: ${shutdownErr.message}`);
+      }
+      process.exit(0);
     } catch (error) {
       console.error('Error:', error.message);
       process.exit(1);
